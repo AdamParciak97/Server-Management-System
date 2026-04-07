@@ -36,6 +36,58 @@ Projekt składa się z trzech części:
 3. Operator zarządza hostami, komendami, politykami i paczkami z poziomu UI.
 4. Agent pobiera oczekujące komendy, wykonuje je lokalnie i odsyła wynik.
 
+## Screenshots
+
+Po dodaniu obrazków najlepiej wrzucić je do `docs/screenshots/`.
+
+### 1. Dashboard overview
+
+Co pokazać:
+
+- główny widok z podsumowaniem infrastruktury
+- liczbę agentów, alertów i statusów hostów
+- wykresy albo kafelki z najważniejszymi metrykami
+
+```md
+![Dashboard overview](docs/screenshots/dashboard-overview.png)
+```
+
+### 2. Server inventory
+
+Co pokazać:
+
+- listę serwerów
+- szczegóły wybranego hosta
+- pakiety, usługi, procesy albo diff konfiguracji
+
+```md
+![Server inventory](docs/screenshots/server-inventory.png)
+```
+
+### 3. Remote commands
+
+Co pokazać:
+
+- tworzenie lub podgląd zdalnej komendy
+- status wykonania
+- log wykonania albo historię komend
+
+```md
+![Remote commands](docs/screenshots/remote-commands.png)
+```
+
+### 4. Compliance and alerts
+
+Co pokazać:
+
+- widok compliance policies lub exceptions
+- aktywne alerty
+- stan zgodności hostów z politykami
+
+```md
+![Compliance and alerts](docs/screenshots/compliance-alerts.png)
+```
+
 ## Szybki start lokalnie
 
 ### Wymagania
