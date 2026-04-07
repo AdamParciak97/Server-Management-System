@@ -40,19 +40,15 @@ Projekt składa się z trzech części:
 
 ### 1. Dashboard overview
 
-Co pokazać:
-
 - główny widok z podsumowaniem infrastruktury
-- liczbę agentów, alertów i statusów hostów
+- liczba agentów, alertów i statusów hostów
 - wykresy albo kafelki z najważniejszymi metrykami
 
 <img width="1899" height="1033" alt="dashboard-overview" src="https://github.com/user-attachments/assets/09eef77f-4645-4699-9a4d-c98cf2295287" />
 
 ### 2. Server inventory
 
-Co pokazać:
-
-- listę serwerów
+- lista serwerów
 - szczegóły wybranego hosta
 - pakiety, usługi, procesy albo diff konfiguracji
 
@@ -60,8 +56,6 @@ Co pokazać:
 
 
 ### 3. Remote commands
-
-Co pokazać:
 
 - tworzenie lub podgląd zdalnej komendy
 - status wykonania
@@ -71,8 +65,6 @@ Co pokazać:
 
 
 ### 4. Compliance and alerts
-
-Co pokazać:
 
 - widok compliance policies lub exceptions
 - aktywne alerty
