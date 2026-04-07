@@ -235,4 +235,4 @@ Publiczne repo nie powinno zawierać wygenerowanych artefaktów i sekretów:
 
 ## Licencja
 
-Brak zdefiniowanej licencji. Jeśli repo ma być otwarte publicznie, warto dodać `LICENSE`.
+MIT.
