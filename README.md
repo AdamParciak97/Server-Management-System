@@ -38,8 +38,6 @@ Projekt składa się z trzech części:
 
 ## Screenshots
 
-Po dodaniu obrazków najlepiej wrzucić je do `docs/screenshots/`.
-
 ### 1. Dashboard overview
 
 Co pokazać:
@@ -48,9 +46,7 @@ Co pokazać:
 - liczbę agentów, alertów i statusów hostów
 - wykresy albo kafelki z najważniejszymi metrykami
 
-```md
-![Dashboard overview](docs/screenshots/dashboard-overview.png)
-```
+<img width="1899" height="1033" alt="dashboard-overview" src="https://github.com/user-attachments/assets/09eef77f-4645-4699-9a4d-c98cf2295287" />
 
 ### 2. Server inventory
 
@@ -60,9 +56,8 @@ Co pokazać:
 - szczegóły wybranego hosta
 - pakiety, usługi, procesy albo diff konfiguracji
 
-```md
-![Server inventory](docs/screenshots/server-inventory.png)
-```
+<img width="1901" height="912" alt="server-inventory" src="https://github.com/user-attachments/assets/2587b2bc-2e15-48fe-b8f5-e3442c418a10" />
+
 
 ### 3. Remote commands
 
@@ -72,9 +67,8 @@ Co pokazać:
 - status wykonania
 - log wykonania albo historię komend
 
-```md
-![Remote commands](docs/screenshots/remote-commands.png)
-```
+<img width="919" height="844" alt="remote-commands" src="https://github.com/user-attachments/assets/9facbb7a-a37f-466a-8d8d-dae6c8b96a22" />
+
 
 ### 4. Compliance and alerts
 
@@ -84,9 +78,8 @@ Co pokazać:
 - aktywne alerty
 - stan zgodności hostów z politykami
 
-```md
-![Compliance and alerts](docs/screenshots/compliance-alerts.png)
-```
+<img width="1912" height="435" alt="compliance-alerts" src="https://github.com/user-attachments/assets/e58cfb47-2e09-4e65-8454-2271f9271e63" />
+
 
 ## Szybki start lokalnie
 
