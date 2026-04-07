@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMS - Server Management System</title>
+<link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+<div id="app">
+  <!-- Login screen shown by JS if not authenticated -->
+  <div id="login-screen" class="hidden">
+    <div class="login-card">
+      <h1>Server Management System</h1>
+      <form id="login-form">
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" id="login-username" placeholder="admin" autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="login-password" autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">Login</button>
+        <div id="login-error" class="error-msg hidden"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main app (shown after login) -->
+  <div id="main-app" class="hidden">
+    <nav id="sidebar">
+      <div class="logo">SMS</div>
+      <ul class="nav-menu">
+        <li><a href="#overview" class="nav-link active" data-view="overview">
+          <span class="nav-icon">&#9672;</span> Overview
+        </a></li>
+        <li><a href="#servers" class="nav-link" data-view="servers">
+          <span class="nav-icon">&#9671;</span> Servers
+        </a></li>
+        <li><a href="#commands" class="nav-link" data-view="commands">
+          <span class="nav-icon">&#9670;</span> Commands
+        </a></li>
+        <li><a href="#alerts" class="nav-link" data-view="alerts">
+          <span class="nav-icon">&#9650;</span> Alerts
+          <span id="alert-badge" class="badge hidden">0</span>
+        </a></li>
+        <li><a href="#compliance" class="nav-link" data-view="compliance">
+          <span class="nav-icon">&#10003;</span> Compliance
+        </a></li>
+        <li><a href="#packages" class="nav-link" data-view="packages">
+          <span class="nav-icon">&#9707;</span> Packages
+        </a></li>
+        <li><a href="#audit" class="nav-link" data-view="audit">
+          <span class="nav-icon">&#9783;</span> Audit Log
+        </a></li>
+        <li><a href="#settings" class="nav-link" data-view="settings">
+          <span class="nav-icon">&#9881;</span> Settings
+        </a></li>
+      </ul>
+      <div class="sidebar-footer">
+        <span id="current-user"></span>
+        <button id="logout-btn" class="btn btn-sm">Logout</button>
+      </div>
+    </nav>
+
+    <main id="content">
+      <!-- Views rendered by JS -->
+    </main>
+  </div>
+</div>
+
+<script src="/static/vendor/chart.min.js"></script>
+<script src="/static/js/api.js"></script>
+<script>window.Views = window.Views || {};</script>
+<script src="/static/js/views/overview.js"></script>
+<script src="/static/js/views/servers.js"></script>
+<script src="/static/js/views/commands.js"></script>
+<script src="/static/js/views/alerts.js"></script>
+<script src="/static/js/views/compliance.js"></script>
+<script src="/static/js/views/packages.js"></script>
+<script src="/static/js/views/audit.js"></script>
+<script src="/static/js/views/settings.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

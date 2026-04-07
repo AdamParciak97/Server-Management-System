@@ -1,0 +1,21 @@
+# Nie kopiuj do obrazu Docker
+.git/
+.github/
+bin/
+sms-deploy*/
+*.tar.gz
+*.tar
+certs/agents/
+scripts/
+README.md
+Makefile
+docker-compose*.yml
+.env*
+.dockerignore
+
+# Pliki deweloperskie
+*.test
+*.prof
+tmp/
+.vscode/
+.idea/

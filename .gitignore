@@ -1,0 +1,41 @@
+# Local environment
+.env
+.env.*
+!.env.example
+
+# IDE and local notes
+.claude/
+.idea/
+.vscode/
+memory/
+
+# Git metadata
+.git/
+
+# Build outputs
+bin/
+dist/
+build/
+*.exe
+!scripts/*.exe
+
+# Runtime data
+uploads/
+*.db
+*.sqlite
+*.sqlite3
+
+# Certificates and secrets
+certs/
+agents/
+
+# Release bundles and archives
+sms-deploy*/
+*.tar
+*.tar.gz
+*.zip
+
+# Logs and temp files
+*.log
+tmp/
+temp/

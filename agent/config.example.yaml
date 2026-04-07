@@ -1,0 +1,26 @@
+server:
+  url: "https://YOUR_SERVER:8443"
+  # CA certificate for verifying the server's TLS certificate
+  ca_cert: "/etc/sms-agent/ca.crt"
+  # Client certificate for mTLS authentication (generated per-agent)
+  client_cert: "/etc/sms-agent/agent.crt"
+  client_key: "/etc/sms-agent/agent.key"
+
+agent:
+  # One-time registration token (obtained from the dashboard Settings > Tokens)
+  registration_token: "YOUR_REGISTRATION_TOKEN_HERE"
+  # How often to poll for commands and send reports (in seconds)
+  poll_interval_seconds: 60
+  # Maximum time a command can run before being killed (in seconds)
+  command_timeout_seconds: 1800
+  # Path to local SQLite buffer database (used when server is unreachable)
+  buffer_db: "/var/lib/sms-agent/buffer.db"
+  # Service name used for restart and self-update workflows
+  service_name: "sms-agent"
+  # Log file path (leave empty to log to stdout only)
+  log_file: "/var/log/sms-agent.log"
+  # Log level: debug, info, warn, error
+  log_level: "info"
+  # Local health check HTTP port
+  health_port: 9100
+  version: "1.0.0"

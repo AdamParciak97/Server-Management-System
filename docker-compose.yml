@@ -1,0 +1,52 @@
+# docker-compose.yml — używany DO BUDOWANIA obrazu lokalnie
+# Na serwerze produkcyjnym użyj: docker-compose.prod.yml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sms-postgres
+    environment:
+      POSTGRES_DB: sms
+      POSTGRES_USER: sms
+      POSTGRES_PASSWORD: sms_password_change_me
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sms -d sms"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: sms-server:latest
+    container_name: sms-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://sms:sms_password_change_me@postgres:5432/sms?sslmode=disable"
+      SERVER_ADDR: ":8443"
+      JWT_SECRET: "change-me-very-long-secret-key-for-production-use"
+      DB_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000001"
+      UPLOAD_DIR: "/app/uploads"
+      MIGRATIONS_DIR: "file:///app/migrations"
+      CA_CERT_FILE: "/app/certs/ca.crt"
+      TLS_CERT_FILE: "/app/certs/server.crt"
+      TLS_KEY_FILE: "/app/certs/server.key"
+    volumes:
+      - ./certs:/app/certs:ro
+      - uploads:/app/uploads
+    ports:
+      - "8443:8443"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  uploads:

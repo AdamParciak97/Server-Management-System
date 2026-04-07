@@ -1,0 +1,44 @@
+# ─── Stage 1: Build ──────────────────────────────────────────────────────────
+FROM golang:1.23-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /build
+
+# Najpierw tylko manifesty — Docker cache dla warstwy zależności
+COPY go.mod go.sum* ./
+RUN go mod download
+
+# Teraz reszta kodu (zmiana tu nie unieważnia cache zależności)
+COPY agent/     agent/
+COPY server/    server/
+COPY shared/    shared/
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o sms-server ./server/
+
+# ─── Stage 2: Runtime ────────────────────────────────────────────────────────
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata wget \
+    && addgroup -S sms \
+    && adduser -S -G sms sms
+
+WORKDIR /app
+
+COPY --from=builder /build/sms-server  ./sms-server
+COPY server/static/                    ./static/
+COPY server/migrations/                ./migrations/
+
+RUN mkdir -p /app/certs /app/uploads \
+    && chown -R sms:sms /app
+
+USER sms
+
+EXPOSE 8443
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD wget -q -O /dev/null --no-check-certificate https://localhost:8443/health || \
+        wget -q -O /dev/null http://localhost:8443/health || exit 1
+
+ENTRYPOINT ["./sms-server"]
