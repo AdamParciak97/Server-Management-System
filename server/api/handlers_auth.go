@@ -2,16 +2,31 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/sms/server-mgmt/server/db"
 )
+
+func decodeAuthRequest(w http.ResponseWriter, r *http.Request, target interface{}) error {
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil { return err }
+	if err := decoder.Decode(new(interface{})); err != io.EOF { return errors.New("invalid request") }
+	return nil
+}
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAuthRequest(w,r,&req); err != nil || req.Username=="" || req.Password=="" {
 		respondError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
@@ -20,23 +35,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	localOK := err == nil && user != nil && user.AuthSource != "ldap" && s.db.VerifyPassword(hash, req.Password)
 	if !localOK {
 		user, err = s.authenticateLDAP(r.Context(), req.Username, req.Password)
-		if err != nil {
+		hash = ""
+		if err != nil || user == nil || !user.IsActive {
 			respondError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
 	}
 
-	accessToken, err := s.generateAccessToken(r.Context(), user)
+	sessionID := uuid.New().String()
+	accessToken, err := s.generateAccessToken(r.Context(), user, sessionID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to generate token")
 		return
 	}
 
-	refreshToken := s.generateRefreshToken()
+	refreshToken, err := s.generateRefreshToken()
+	if err != nil { respondError(w,500,"failed to generate token"); return }
 	refreshHash := refreshTokenHash(refreshToken)
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
-	if err := s.db.SaveRefreshToken(r.Context(), user.ID, refreshHash, expiresAt); err != nil {
-		s.logger.Error("save refresh token", "error", err)
+	ua := []rune(r.UserAgent())
+	if len(ua)>512 { ua=ua[:512] }
+	if err := s.db.CreateAccountSession(r.Context(), user.ID, hash, sessionID, refreshHash, string(ua), expiresAt); err != nil {
+		sessionFailure(w,err)
+		return
 	}
 
 	_ = s.db.UpdateUserLastLogin(r.Context(), user.ID)
@@ -54,40 +75,46 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
+	s.refreshSession(w,r,s.db)
+}
+
+func (s *Server) refreshSession(w http.ResponseWriter, r *http.Request, store refreshSessionStore) {
 	var req struct {
 		RefreshToken string `json:"refresh_token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAuthRequest(w,r,&req); err != nil || req.RefreshToken=="" || len(req.RefreshToken)>256 {
 		respondError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 
 	hash := refreshTokenHash(req.RefreshToken)
-	userID, err := s.db.ValidateRefreshToken(r.Context(), hash)
+	session, err := store.GetRefreshSession(r.Context(), hash)
 	if err != nil {
-		respondError(w, http.StatusUnauthorized, "invalid or expired refresh token")
+		sessionFailure(w,err)
 		return
 	}
 
-	user, err := s.db.GetUserByID(r.Context(), userID)
+	user, err := store.GetUserByID(r.Context(), session.UserID)
 	if err != nil {
-		respondError(w, http.StatusUnauthorized, "user not found")
+		sessionFailure(w,err)
+		return
+	}
+	if user==nil || !user.IsActive { sessionFailure(w,db.ErrSessionInvalid); return }
+
+	// Prepare credentials before consuming the old token. Only commit publishes them.
+	accessToken, err := s.accessForSession(r.Context(), user, session.ID, store)
+	if err != nil {
+		respondError(w, http.StatusServiceUnavailable, "failed to generate token")
 		return
 	}
 
-	// Revoke old token
-	_ = s.db.RevokeRefreshToken(r.Context(), hash)
-
-	accessToken, err := s.generateAccessToken(r.Context(), user)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to generate token")
-		return
-	}
-
-	newRefreshToken := s.generateRefreshToken()
+	newRefreshToken, err := s.generateRefreshToken()
+	if err != nil { respondError(w,500,"failed to generate token"); return }
 	newRefreshHash := refreshTokenHash(newRefreshToken)
-	expiresAt := time.Now().Add(7 * 24 * time.Hour)
-	_ = s.db.SaveRefreshToken(r.Context(), user.ID, newRefreshHash, expiresAt)
+	if err = store.RotateAccountSession(r.Context(),user.ID,session.ID,hash,newRefreshHash); err != nil {
+		sessionFailure(w,err)
+		return
+	}
 
 	respondOK(w, map[string]interface{}{
 		"access_token":  accessToken,
@@ -97,12 +124,5 @@ func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.RefreshToken != "" {
-		hash := refreshTokenHash(req.RefreshToken)
-		_ = s.db.RevokeRefreshToken(r.Context(), hash)
-	}
-	respondOK(w, map[string]string{"status": "logged out"})
+	s.revokeSessions(w,r,s.db,false)
 }

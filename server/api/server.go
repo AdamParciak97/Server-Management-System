@@ -84,6 +84,12 @@ func (s *Server) buildRouter() *chi.Mux {
 
 		// Servers
 		r.With(s.requirePermission("servers.read")).Get("/servers", s.handleListServers)
+		r.Get("/inventory/servers", s.handleInventory)
+		r.With(s.requirePermission("servers.read")).Get("/inventory/groups", s.handleInventoryGroups)
+		r.Get("/inventory/views", s.handleInventoryViews)
+		r.Post("/inventory/views", s.handleInventoryViews)
+		r.Put("/inventory/views/{viewID}", s.handleInventoryViews)
+		r.Delete("/inventory/views/{viewID}", s.handleInventoryViews)
 		r.With(s.requirePermission("servers.read")).Get("/servers/{id}", s.handleGetServer)
 		r.With(s.requirePermission("servers.read")).Get("/servers/{id}/history", s.handleServerHistory)
 		r.With(s.requirePermission("servers.read")).Get("/servers/{id}/timeline", s.handleServerTimeline)
@@ -142,16 +148,20 @@ func (s *Server) buildRouter() *chi.Mux {
 			r.With(s.requirePermission("users.write")).Put("/{id}/scopes", s.handleSetUserScopes)
 		})
 		r.Post("/account/password", s.handleChangePassword)
+		r.Get("/account/sessions", s.handleListSessions)
+		r.Post("/account/sessions/revoke-others", s.handleRevokeOtherSessions)
 
 		// Groups
 		r.With(s.requirePermission("groups.read")).Get("/groups", s.handleListGroups)
 		r.With(s.requirePermission("groups.write")).Post("/groups", s.handleCreateGroup)
 		r.With(s.requirePermission("groups.write")).Delete("/groups/{id}", s.handleDeleteGroup)
+		r.With(s.requirePermission("groups.read")).Get("/groups/{id}/required-agents", s.handleGetRequiredAgents)
 		r.With(s.requirePermission("groups.write")).Put("/groups/{id}/required-agents", s.handleSetRequiredAgents)
 
 		// Registration tokens
 		r.With(s.requirePermission("tokens.read")).Get("/tokens", s.handleListTokens)
 		r.With(s.requirePermission("tokens.write")).Post("/tokens", s.handleCreateToken)
+		r.With(s.requirePermission("tokens.write")).Post("/tokens/{id}/revoke", s.handleRevokeToken)
 
 		// Audit log
 		r.With(s.requirePermission("audit.read")).Get("/audit", s.handleListAudit)

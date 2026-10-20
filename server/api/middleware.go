@@ -3,6 +3,9 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -22,6 +25,7 @@ const (
 )
 
 type JWTClaims struct {
+	SessionID string `json:"session_id"`
 	UserID   string `json:"user_id"`
 	Username string `json:"username"`
 	Role     string `json:"role"`
@@ -31,6 +35,10 @@ type JWTClaims struct {
 }
 
 func (s *Server) jwtMiddleware(next http.Handler) http.Handler {
+	return s.sessionMiddleware(next, s.db)
+}
+
+func (s *Server) sessionMiddleware(next http.Handler, store sessionValidator) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") {
@@ -40,15 +48,38 @@ func (s *Server) jwtMiddleware(next http.Handler) http.Handler {
 		tokenStr := auth[7:]
 		claims := &JWTClaims{}
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			if t.Method != jwt.SigningMethodHS256 {
 				return nil, fmt.Errorf("unexpected signing method")
 			}
 			return s.jwtSecret, nil
-		})
+		}, jwt.WithExpirationRequired())
 		if err != nil || !token.Valid {
 			respondError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
+		if claims.SessionID == "" || claims.UserID == "" {
+			respondError(w, http.StatusUnauthorized, "sign in again")
+			return
+		}
+		if err := store.ValidateAccountSession(r.Context(), claims.UserID, claims.SessionID); err != nil {
+			status := http.StatusServiceUnavailable
+			if errors.Is(err, db.ErrSessionInvalid) { status = http.StatusUnauthorized }
+			respondError(w, status, "session unavailable")
+			return
+		}
+		// Authorization must not retain a removed permission or group scope until
+		// JWT expiry. Database failures must never mean unrestricted access.
+		user, err := store.GetUserByID(r.Context(), claims.UserID)
+		if err != nil { respondError(w,503,"authorization unavailable"); return }
+		if user == nil || !user.IsActive { respondError(w,401,"account unavailable"); return }
+		permissions, err := store.ListUserPermissions(r.Context(), claims.UserID)
+		if err != nil { respondError(w,503,"authorization unavailable"); return }
+		scopes, err := store.ListUserGroupScopes(r.Context(), claims.UserID)
+		if err != nil { respondError(w,503,"authorization unavailable"); return }
+		claims.Role = user.Role
+		claims.Username = user.Username
+		claims.Permissions = db.BuildEffectivePermissions(user.Role, permissions)
+		claims.GroupScopes = scopes
 		ctx := context.WithValue(r.Context(), ctxUser, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -104,25 +135,31 @@ func (s *Server) requireRoleMiddleware(roles ...string) func(http.Handler) http.
 }
 
 func (s *Server) mtlsMiddleware(next http.Handler) http.Handler {
+	return s.agentCertificateMiddleware(next, s.db)
+}
+
+type agentCertificateStore interface {
+	GetAgentByCert(context.Context, string) (*db.Agent, error)
+}
+
+func (s *Server) agentCertificateMiddleware(next http.Handler, store agentCertificateStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var fingerprint string
-
-		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-			cert := r.TLS.PeerCertificates[0]
-			h := sha256.Sum256(cert.Raw)
-			fingerprint = fmt.Sprintf("%x", h)
-		}
-
-		if fingerprint == "" {
-			// Allow registration without cert (uses token instead)
+		// Registration has its own one-time token check. Every other agent
+		// endpoint requires an identity established from a registered certificate.
+		if r.Method == http.MethodPost && r.URL.Path == "/api/agent/register" {
 			next.ServeHTTP(w, r)
 			return
 		}
+		fingerprint := clientCertificateFingerprint(r, time.Now())
 
-		agent, err := s.db.GetAgentByCert(r.Context(), fingerprint)
-		if err != nil {
-			// Unknown cert but allow to proceed (registration endpoint handles this)
-			next.ServeHTTP(w, r)
+		if fingerprint == "" {
+			respondError(w, http.StatusUnauthorized, "registered client certificate required")
+			return
+		}
+
+		agent, err := store.GetAgentByCert(r.Context(), fingerprint)
+		if err != nil || agent == nil {
+			respondError(w, http.StatusUnauthorized, "unknown client certificate")
 			return
 		}
 
@@ -209,7 +246,10 @@ func (s *Server) isScoped(claims *JWTClaims) bool {
 }
 
 func (s *Server) canAccessGroup(claims *JWTClaims, groupID *string) bool {
-	if claims == nil || claims.Role == "admin" || len(claims.GroupScopes) == 0 {
+	if claims == nil {
+		return false
+	}
+	if claims.Role == "admin" || len(claims.GroupScopes) == 0 {
 		return true
 	}
 	if groupID == nil || *groupID == "" {
@@ -252,11 +292,18 @@ func (s *Server) filterGroupsByScope(claims *JWTClaims, groups []*db.Group) []*d
 
 // ─── JWT generation ───────────────────────────────────────────────────────────
 
-func (s *Server) generateAccessToken(ctx context.Context, user *db.User) (string, error) {
-	extraPermissions, _ := s.db.ListUserPermissions(ctx, user.ID)
-	groupScopes, _ := s.db.ListUserGroupScopes(ctx, user.ID)
+func (s *Server) generateAccessToken(ctx context.Context, user *db.User, sessionID string) (string, error) {
+	return s.accessForSession(ctx, user, sessionID, s.db)
+}
+
+func (s *Server) accessForSession(ctx context.Context, user *db.User, sessionID string, store authorizationStore) (string, error) {
+	extraPermissions, err := store.ListUserPermissions(ctx, user.ID)
+	if err != nil { return "", err }
+	groupScopes, err := store.ListUserGroupScopes(ctx, user.ID)
+	if err != nil { return "", err }
 	effectivePermissions := db.BuildEffectivePermissions(user.Role, extraPermissions)
 	claims := &JWTClaims{
+		SessionID: sessionID,
 		UserID:   user.ID,
 		Username: user.Username,
 		Role:     user.Role,
@@ -270,13 +317,10 @@ func (s *Server) generateAccessToken(ctx context.Context, user *db.User) (string
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.jwtSecret)
 }
 
-func (s *Server) generateRefreshToken() string {
+func (s *Server) generateRefreshToken() (string, error) {
 	b := make([]byte, 32)
-	for i := range b {
-		b[i] = byte(time.Now().UnixNano() & 0xff)
-	}
-	h := sha256.Sum256(b)
-	return fmt.Sprintf("%x%x", h, time.Now().UnixNano())
+	if _, err := rand.Read(b); err != nil { return "", err }
+	return hex.EncodeToString(b), nil
 }
 
 func refreshTokenHash(token string) string {

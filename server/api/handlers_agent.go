@@ -2,49 +2,57 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/sms/server-mgmt/server/db"
 	"github.com/sms/server-mgmt/shared"
 )
 
 func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
+	s.registerAgent(w, r, s.db)
+}
+
+type agentRegistrationStore interface {
+	RegisterAgentWithToken(context.Context, string, string, string, string) (string, error)
+}
+
+func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request, store agentRegistrationStore) {
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var req shared.RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	// Validate registration token
-	valid, err := s.db.ValidateRegistrationToken(r.Context(), req.RegistrationToken)
-	if err != nil || !valid {
-		respondError(w, http.StatusUnauthorized, "invalid or expired registration token")
+	if strings.TrimSpace(req.Hostname) == "" || len(req.Hostname) > 255 || len(req.AgentVersion) > 64 || len(req.RegistrationToken) > 128 || req.RegistrationToken == "" {
+		respondError(w, http.StatusBadRequest, "invalid registration fields")
 		return
 	}
 
-	// Extract client cert fingerprint
-	var certFP string
-	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-		h := sha256.Sum256(r.TLS.PeerCertificates[0].Raw)
-		certFP = fmt.Sprintf("%x", h)
-	}
+	certFP := clientCertificateFingerprint(r, time.Now())
 
-	agent, err := s.db.RegisterAgent(r.Context(), req.Hostname, certFP, req.AgentVersion)
+	if certFP == "" {
+		respondError(w, http.StatusUnauthorized, "client certificate required for registration")
+		return
+	}
+	agentID, err := store.RegisterAgentWithToken(r.Context(), req.RegistrationToken, req.Hostname, certFP, req.AgentVersion)
+	if errors.Is(err, db.ErrRegistrationTokenUnavailable) {
+		respondError(w, http.StatusUnauthorized, "invalid or expired registration token")
+		return
+	}
 	if err != nil {
-		s.logger.Error("register agent", "error", err)
 		respondError(w, http.StatusInternalServerError, "registration failed")
 		return
 	}
 
-	// Consume token
-	_ = s.db.ConsumeRegistrationToken(r.Context(), req.RegistrationToken, agent.ID)
-
 	respondOK(w, shared.RegisterResponse{
-		AgentID:    agent.ID,
+		AgentID:    agentID,
 		ServerTime: time.Now().Unix(),
 	})
 }
@@ -96,12 +104,8 @@ func (s *Server) handleAgentReport(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetCommands(w http.ResponseWriter, r *http.Request) {
 	agentID := getAgentIDFromCtx(r.Context())
 
-	// Also support agent_id query param for mTLS-less dev mode
 	if agentID == "" {
-		agentID = r.URL.Query().Get("agent_id")
-	}
-	if agentID == "" {
-		respondError(w, http.StatusBadRequest, "agent not identified")
+		respondError(w, http.StatusUnauthorized, "agent not identified")
 		return
 	}
 
@@ -138,7 +142,20 @@ func (s *Server) handleGetCommands(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCommandResult(w http.ResponseWriter, r *http.Request) {
+	s.acceptCommandResult(w, r, s.db)
+}
+
+type commandResultStore interface {
+	UpdateCommandResult(context.Context, string, *shared.CommandResult) error
+	CreateAlert(context.Context, *string, string, string, string, string) error
+}
+
+func (s *Server) acceptCommandResult(w http.ResponseWriter, r *http.Request, store commandResultStore) {
 	agentID := getAgentIDFromCtx(r.Context())
+	if agentID == "" {
+		respondError(w, http.StatusUnauthorized, "agent not identified")
+		return
+	}
 
 	var result shared.CommandResult
 	if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
@@ -146,11 +163,18 @@ func (s *Server) handleCommandResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if agentID != "" {
-		result.AgentID = agentID
-	}
+	result.AgentID = agentID
 
-	if err := s.db.UpdateCommandResult(r.Context(), &result); err != nil {
+	if err := store.UpdateCommandResult(r.Context(), agentID, &result); err != nil {
+		if errors.Is(err, db.ErrInvalidCommandResult) {
+			respondError(w, http.StatusBadRequest, "invalid command result")
+			return
+		}
+		if errors.Is(err, db.ErrCommandResultConflict) {
+			// Do not reveal whether a command belongs to a different agent.
+			respondError(w, http.StatusConflict, "command result not accepted")
+			return
+		}
 		s.logger.Error("update command result", "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to update result")
 		return
@@ -158,11 +182,10 @@ func (s *Server) handleCommandResult(w http.ResponseWriter, r *http.Request) {
 
 	// Create alert if command failed
 	if result.Status == "error" || result.Status == "timeout" {
-		go func() {
-			_ = s.db.CreateAlert(r.Context(), &result.AgentID, "command_failed", "high",
-				fmt.Sprintf("Command %s failed: %s", result.CommandID, result.Status),
-				result.Error)
-		}()
+		if err := store.CreateAlert(r.Context(), &result.AgentID, "command_failed", "high",
+			fmt.Sprintf("Command %s failed: %s", result.CommandID, result.Status), result.Error); err != nil {
+			s.logger.Error("create command failure alert", "command_id", result.CommandID, "error", err)
+		}
 	}
 
 	respondOK(w, map[string]string{"status": "ok"})

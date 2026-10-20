@@ -3,9 +3,11 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sms/server-mgmt/shared"
 )
 
@@ -57,18 +59,22 @@ type ScheduledCommand struct {
 
 func (d *DB) CreateCommand(ctx context.Context, agentID, groupID *string, cmd shared.Command, createdBy *string) (*DBCommand, error) {
 	id := uuid.New().String()
-	payloadJSON, _ := json.Marshal(cmd.Payload)
-
-	_, err := d.Pool.Exec(ctx, `
-		INSERT INTO commands
-			(id, agent_id, group_id, type, priority, payload, dry_run, timeout_seconds, created_by, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
-		id, agentID, groupID, cmd.Type, cmd.Priority, payloadJSON,
-		cmd.DryRun, cmd.Timeout, createdBy)
-	if err != nil {
+	if err := insertCommand(ctx, d.Pool, id, agentID, groupID, cmd, createdBy); err != nil {
 		return nil, err
 	}
 	return d.GetCommand(ctx, id)
+}
+
+func insertCommand(ctx context.Context, executor commandResultExecutor, id string, agentID, groupID *string, cmd shared.Command, createdBy *string) error {
+	payloadJSON, _ := json.Marshal(cmd.Payload)
+
+	_, err := executor.Exec(ctx, `
+		INSERT INTO commands
+			(id, agent_id, group_id, type, priority, payload, dry_run, timeout_seconds, created_by, status, requires_approval)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10)`,
+		id, agentID, groupID, cmd.Type, cmd.Priority, payloadJSON,
+		cmd.DryRun, cmd.Timeout, createdBy, cmd.Type == shared.CmdRunScript && !cmd.DryRun)
+	return err
 }
 
 func (d *DB) GetCommand(ctx context.Context, id string) (*DBCommand, error) {
@@ -113,29 +119,83 @@ func (d *DB) GetPendingCommands(ctx context.Context, agentID string) ([]*DBComma
 		cmds = append(cmds, c)
 	}
 
-	// Mark as sent
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	// Only return commands this poll actually claimed. Concurrent cancellation
+	// or another poll must not be overwritten by a stale selection.
 	if len(cmds) > 0 {
 		ids := make([]string, len(cmds))
 		for i, c := range cmds {
 			ids[i] = c.ID
 		}
-		_, _ = d.Pool.Exec(ctx, `
+		claimed, err := d.Pool.Query(ctx, `
 			UPDATE commands SET status = 'sent', sent_at = NOW()
-			WHERE id = ANY($1::uuid[])`, ids)
+			WHERE id = ANY($1::uuid[]) AND agent_id = $2 AND status = 'pending'
+			  AND (requires_approval = false OR approved_at IS NOT NULL)
+			RETURNING id`, ids, agentID)
+		if err != nil {
+			return nil, err
+		}
+		defer claimed.Close()
+		accepted := make(map[string]bool)
+		for claimed.Next() {
+			var id string
+			if err := claimed.Scan(&id); err != nil {
+				return nil, err
+			}
+			accepted[id] = true
+		}
+		if err := claimed.Err(); err != nil {
+			return nil, err
+		}
+		filtered := cmds[:0]
+		for _, cmd := range cmds {
+			if accepted[cmd.ID] {
+				filtered = append(filtered, cmd)
+			}
+		}
+		cmds = filtered
 	}
 
-	return cmds, rows.Err()
+	return cmds, nil
 }
 
-func (d *DB) UpdateCommandResult(ctx context.Context, result *shared.CommandResult) error {
-	_, err := d.Pool.Exec(ctx, `
+var ErrInvalidCommandResult = errors.New("invalid command result")
+var ErrCommandResultConflict = errors.New("command result not accepted")
+
+type commandResultExecutor interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+// agentID is the authenticated identity, never the ID claimed by the body.
+func (d *DB) UpdateCommandResult(ctx context.Context, agentID string, result *shared.CommandResult) error {
+	return updateCommandResult(ctx, d.Pool, agentID, result)
+}
+
+func updateCommandResult(ctx context.Context, executor commandResultExecutor, agentID string, result *shared.CommandResult) error {
+	if result == nil || uuid.Validate(agentID) != nil || uuid.Validate(result.CommandID) != nil ||
+		(result.Status != "success" && result.Status != "error" && result.Status != "timeout") ||
+		result.DurationMs < 0 || result.CompletedAt.IsZero() {
+		return ErrInvalidCommandResult
+	}
+	tag, err := executor.Exec(ctx, `
 		UPDATE commands SET
 			status = $2, output = $3, error = $4, exit_code = $5,
 			duration_ms = $6, completed_at = $7
-		WHERE id = $1`,
+		WHERE id = $1 AND agent_id = $8 AND status IN ('sent', 'running')
+		  AND (requires_approval = false OR approved_at IS NOT NULL)`,
 		result.CommandID, result.Status, result.Output, result.Error,
-		result.ExitCode, result.DurationMs, result.CompletedAt)
-	return err
+		result.ExitCode, result.DurationMs, result.CompletedAt, agentID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrCommandResultConflict
+	}
+	return nil
 }
 
 func (d *DB) CancelCommand(ctx context.Context, id string) error {

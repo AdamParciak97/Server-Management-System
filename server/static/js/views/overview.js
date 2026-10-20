@@ -1,113 +1,46 @@
 'use strict';
 
 Views.Overview = (() => {
+  let loadVersion = 0;
+
+  function metric(id, label, note, tone, icon) {
+    return `<div class="card metric-card ${tone}"><div class="metric-header"><span>${label}</span><span class="metric-icon">${UI.icon(icon)}</span></div><div class="stat-value" id="${id}">—</div><div class="metric-footer"><span class="tiny-dot"></span>${note}</div></div>`;
+  }
+
+  function detailMetric(id, label) {
+    return `<div class="detail-metric"><strong id="${id}">—</strong><span>${label}</span></div>`;
+  }
+
+  function distribution(id, title) {
+    return `<div class="card"><div class="section-title">${title}</div><div id="${id}"><span class="spinner"></span></div></div>`;
+  }
+
   async function render(container) {
     container.innerHTML = `
-      <div class="page-header">
-        <h2>Overview</h2>
-        <div class="page-actions">
-          <button class="btn btn-sm" onclick="Views.Overview.refresh()">&#8635; Refresh</button>
-        </div>
+      <div class="page-header"><div><h2>Infrastructure overview</h2><p class="page-subtitle">Your entire environment. One clear perspective.</p></div><div class="page-actions"><button class="btn" onclick="Views.Overview.refresh()">${UI.icon('refresh')}Refresh</button><a class="btn btn-primary" href="#servers">${UI.icon('server')}View servers</a></div></div>
+      <div id="overview-error" class="error-msg overview-error hidden" role="alert"></div>
+      <section class="overview-hero" aria-label="Infrastructure workspace">
+        <div class="hero-copy"><span class="eyebrow">VISIBILITY STARTS HERE</span><h3>A connected fleet.<br><em>A clear state of mind.</em></h3><p>Keep every server, service and security signal in view.<br>Your next move starts with the full picture.</p><div class="hero-actions"><a href="#packages" class="btn btn-primary">Connect your infrastructure ${UI.icon('arrow')}</a><a href="#compliance" class="hero-text-link">Explore compliance ↗</a></div></div>
+        <div class="hero-visual" aria-hidden="true"><svg viewBox="0 0 400 240"><circle class="halo" cx="222" cy="122" r="110"/><circle class="orbit" cx="222" cy="122" r="83"/><circle class="orbit" cx="222" cy="122" r="55"/><path class="connector" d="M95 60 222 122 345 65M98 187 222 122 337 190M222 20v204"/><rect class="diagram-node" x="60" y="41" width="70" height="38" rx="7"/><rect class="diagram-node" x="306" y="47" width="70" height="38" rx="7"/><rect class="diagram-node" x="62" y="169" width="70" height="38" rx="7"/><rect class="diagram-node" x="300" y="171" width="70" height="38" rx="7"/><rect class="hub" x="187" y="87" width="70" height="70" rx="18"/><path d="M205 110h34v9h-34zM205 126h34v9h-34z" fill="none" stroke="#9ef1c9"/><circle class="diagram-dot" cx="211" cy="114.5" r="1.5"/><circle class="diagram-dot" cx="211" cy="130.5" r="1.5"/><text x="72" y="64">LINUX</text><text x="315" y="70">WINDOWS</text><text x="75" y="193">AGENT</text><text x="311" y="195">SERVICES</text><circle class="diagram-dot" cx="222" cy="39" r="3"/><circle class="diagram-dot" cx="139" cy="122" r="3"/><circle class="diagram-dot" cx="222" cy="205" r="3"/></svg></div>
+      </section>
+      <div class="grid-4 metric-grid" id="stats-grid">
+        ${metric('st-total', 'Total servers', 'Registered in your workspace', 'info', 'server')}
+        ${metric('st-online', 'Online now', 'Currently reporting', 'online', 'pulse')}
+        ${metric('st-offline', 'Offline servers', 'Check agent connectivity', 'offline', 'server')}
+        ${metric('st-alerts', 'Active alerts', 'Signals requiring attention', 'warning', 'bell')}
       </div>
-      <div class="grid-4 mb-2" id="stats-grid">
-        <div class="card stat-card info"><div class="stat-value" id="st-total">-</div><div class="stat-label">Total Servers</div></div>
-        <div class="card stat-card online"><div class="stat-value" id="st-online">-</div><div class="stat-label">Online</div></div>
-        <div class="card stat-card offline"><div class="stat-value" id="st-offline">-</div><div class="stat-label">Offline</div></div>
-        <div class="card stat-card warning"><div class="stat-value" id="st-alerts">-</div><div class="stat-label">Active Alerts</div></div>
+      <div class="overview-main-grid">
+        <section class="card"><div class="section-heading"><h3 class="section-title">Fleet availability</h3><span class="overview-updated" id="overview-updated"><span class="tiny-dot"></span>Loading snapshot</span></div><div class="health-content"><div class="health-ring"><svg viewBox="0 0 140 140" aria-hidden="true"><circle class="ring-track" cx="70" cy="70" r="58"/><circle class="ring-progress" id="fleet-ring" cx="70" cy="70" r="58" stroke-dasharray="0 365"/></svg><div class="ring-label"><strong id="fleet-percent">—</strong><span>servers online</span></div></div><div id="status-distribution"></div></div></section>
+        ${distribution('os-distribution', 'Operating systems')}
       </div>
-      <div class="grid-4 mb-2">
-        <div class="card stat-card info"><div class="stat-value" id="st-baselines">-</div><div class="stat-label">Baselines</div></div>
-        <div class="card stat-card online"><div class="stat-value" id="st-licensed-windows">-</div><div class="stat-label">Licensed Windows</div></div>
-        <div class="card stat-card warning"><div class="stat-value" id="st-scheduled-tasks">-</div><div class="stat-label">Scheduled Tasks</div></div>
-        <div class="card stat-card info"><div class="stat-value" id="st-windows-assets">-</div><div class="stat-label">Windows Assets</div></div>
-      </div>
-      <div class="grid-4 mb-2">
-        <div class="card stat-card warning"><div class="stat-value" id="st-pending-updates">-</div><div class="stat-label">Hosts With Pending Updates</div></div>
-        <div class="card stat-card offline"><div class="stat-value" id="st-pending-reboot">-</div><div class="stat-label">Hosts Pending Reboot</div></div>
-        <div class="card stat-card info"><div class="stat-value" id="st-service-roles">-</div><div class="stat-label">Service Roles</div></div>
-        <div class="card stat-card info"><div class="stat-value" id="st-dependencies">-</div><div class="stat-label">Dependency Edges</div></div>
-      </div>
-      <div class="grid-4 mb-2">
-        <div class="card stat-card offline"><div class="stat-value" id="st-bitlocker-risk">-</div><div class="stat-label">BitLocker Risk Hosts</div></div>
-        <div class="card stat-card warning"><div class="stat-value" id="st-rdp-enabled">-</div><div class="stat-label">RDP Enabled Hosts</div></div>
-        <div class="card stat-card warning"><div class="stat-value" id="st-winrm-enabled">-</div><div class="stat-label">WinRM Enabled Hosts</div></div>
-        <div class="card stat-card warning"><div class="stat-value" id="st-expiring-certs">-</div><div class="stat-label">Expiring Certificates</div></div>
-      </div>
-      <div class="grid-2 mb-2">
-        <div class="card">
-          <div class="section-title">Server Status Distribution</div>
-          <div id="status-distribution"></div>
-        </div>
-        <div class="card">
-          <div class="section-title">OS Distribution</div>
-          <div id="os-distribution"></div>
-        </div>
-      </div>
-      <div class="grid-2 mb-2">
-        <div class="card">
-          <div class="section-title">License Channel Distribution</div>
-          <div id="license-channel-distribution"></div>
-        </div>
-        <div class="card">
-          <div class="section-title">License Status Distribution</div>
-          <div id="license-status-distribution"></div>
-        </div>
-      </div>
-      <div class="grid-2 mb-2">
-        <div class="card">
-          <div class="section-title">Service Role Distribution</div>
-          <div id="service-role-distribution"></div>
-        </div>
-        <div class="card">
-          <div class="section-title">Dependency Map</div>
-          <div id="dependency-map-distribution"></div>
-        </div>
-      </div>
-      <div class="grid-2 mb-2">
-        <div class="card">
-          <div class="section-title">Remote Access Exposure</div>
-          <div id="remote-access-distribution"></div>
-        </div>
-        <div class="card">
-          <div class="section-title">Security Posture Summary</div>
-          <div id="security-posture-distribution"></div>
-        </div>
-      </div>
-      <div class="card mb-2">
-        <div class="section-title">Windows Asset & Licensing Dashboard</div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Hostname</th><th>Status</th><th>Channel</th><th>Product</th><th>KMS</th><th>Key</th><th>Tasks</th>
-            </tr></thead>
-            <tbody id="asset-licenses"></tbody>
-          </table>
-        </div>
-      </div>
-      <div class="card mb-2">
-        <div class="section-title">Service Map</div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Hostname</th><th>Group</th><th>Roles</th>
-            </tr></thead>
-            <tbody id="service-map"></tbody>
-          </table>
-        </div>
-      </div>
-      <div class="card">
-        <div class="section-title">Recent Servers</div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Hostname</th><th>IP</th><th>OS</th><th>Group</th><th>Last Seen</th><th>Status</th>
-            </tr></thead>
-            <tbody id="recent-servers"></tbody>
-          </table>
-        </div>
-      </div>
+      <section class="card data-card"><div class="section-heading"><h3 class="section-title">Recently seen servers</h3><a href="#servers">View inventory ↗</a></div><div class="table-wrap"><table><thead><tr><th>Hostname</th><th>IP address</th><th>Operating system</th><th>Group</th><th>Last seen</th><th>Status</th></tr></thead><tbody id="recent-servers"><tr><td colspan="6"><span class="spinner"></span></td></tr></tbody></table></div></section>
+      <details class="details-section"><summary><span>Security & maintenance<small>Exposure, updates and certificates</small></span></summary><div class="detail-metrics">
+        ${detailMetric('st-pending-updates', 'Hosts with pending updates')}${detailMetric('st-pending-reboot', 'Hosts pending reboot')}${detailMetric('st-bitlocker-risk', 'BitLocker risk hosts')}${detailMetric('st-expiring-certs', 'Expiring certificates')}
+        ${detailMetric('st-rdp-enabled', 'RDP enabled hosts')}${detailMetric('st-winrm-enabled', 'WinRM enabled hosts')}${detailMetric('st-baselines', 'Saved baselines')}${detailMetric('st-scheduled-tasks', 'Scheduled tasks')}
+      </div><div class="grid-2 mb-2">${distribution('remote-access-distribution', 'Remote access exposure')}${distribution('security-posture-distribution', 'Security posture')}</div></details>
+      <details class="details-section"><summary><span>Assets & licensing<small>Windows estate and license coverage</small></span></summary><div class="detail-metrics">${detailMetric('st-licensed-windows', 'Licensed Windows hosts')}${detailMetric('st-windows-assets', 'Windows assets')}</div><div class="grid-2 mb-2">${distribution('license-channel-distribution', 'License channels')}${distribution('license-status-distribution', 'License status')}</div><div class="table-wrap mb-2"><table><thead><tr><th>Hostname</th><th>Status</th><th>Channel</th><th>Product</th><th>KMS</th><th>Key</th><th>Tasks</th></tr></thead><tbody id="asset-licenses"></tbody></table></div></details>
+      <details class="details-section"><summary><span>Services & dependencies<small>How your environment connects</small></span></summary><div class="detail-metrics">${detailMetric('st-service-roles', 'Service roles')}${detailMetric('st-dependencies', 'Dependency edges')}</div><div class="grid-2 mb-2">${distribution('service-role-distribution', 'Service roles')}${distribution('dependency-map-distribution', 'Dependencies')}</div><div class="table-wrap mb-2"><table><thead><tr><th>Hostname</th><th>Group</th><th>Roles</th></tr></thead><tbody id="service-map"></tbody></table></div></details>
     `;
-
     await loadData();
   }
 
@@ -116,12 +49,18 @@ Views.Overview = (() => {
   }
 
   async function loadData() {
+    const anchor = document.getElementById('stats-grid');
+    if (!anchor) return;
+    const version = ++loadVersion;
+    const isCurrent = () => version === loadVersion && document.getElementById('stats-grid') === anchor;
     try {
       const [statsResp, serversResp] = await Promise.all([
         API.getStats(),
         API.getServers()
       ]);
 
+      if (!isCurrent()) return;
+      document.getElementById('overview-error').classList.add('hidden');
       const stats = statsResp && statsResp.data ? statsResp.data : {};
       const servers = serversResp && serversResp.data ? serversResp.data : [];
 
@@ -143,6 +82,14 @@ Views.Overview = (() => {
 
       const online = Number(stats.online_servers || 0);
       const offline = Number(stats.offline_servers || 0);
+      const total = Number(stats.total_servers || 0);
+      const percent = total ? Math.min(100, Math.round(online / total * 100)) : null;
+      document.getElementById('fleet-percent').textContent = percent === null ? '—' : percent + '%';
+      document.getElementById('fleet-ring').setAttribute('stroke-dasharray', `${(percent || 0) * 3.644} 365`);
+      document.getElementById('fleet-ring').setAttribute('opacity', percent ? '1' : '0');
+      const updated = document.getElementById('overview-updated');
+      updated.classList.add('is-current');
+      updated.innerHTML = '<span class="tiny-dot"></span>Updated ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
       const unknown = Math.max(0, Number(stats.total_servers || 0) - online - offline);
       renderDistribution('status-distribution', [
         { label: 'Online', value: online, color: '#22c55e' },
@@ -187,7 +134,7 @@ Views.Overview = (() => {
       if (!tbody) return;
       const recent = [...servers].sort((a, b) => new Date(b.last_seen || 0) - new Date(a.last_seen || 0)).slice(0, 10);
       if (recent.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-muted text-center" style="padding:2rem">No servers registered yet</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="6" class="empty-table-cell">${UI.empty('Your fleet starts here', 'Connect your first agent to bring inventory, health and security signals into this workspace.')}<div class="text-center mb-2"><a class="btn" href="#packages">${UI.icon('box')}Get an agent package</a></div></td></tr>`;
         return;
       }
       tbody.innerHTML = recent.map(server => `
@@ -201,7 +148,14 @@ Views.Overview = (() => {
         </tr>
       `).join('');
     } catch (err) {
-      console.error('Overview load error:', err);
+      if (!isCurrent()) return;
+      const error = document.getElementById('overview-error');
+      error.textContent = 'Unable to refresh the overview. ' + err.message;
+      error.classList.remove('hidden');
+      const updated = document.getElementById('overview-updated');
+      updated.classList.remove('is-current');
+      updated.textContent = 'Snapshot unavailable';
+      document.getElementById('recent-servers').innerHTML = '<tr><td colspan="6" class="text-muted">Unable to load current data. Use Refresh to try again.</td></tr>';
     }
   }
 
@@ -210,7 +164,7 @@ Views.Overview = (() => {
     if (!el) return;
     const total = items.reduce((sum, item) => sum + Number(item.value || 0), 0);
     if (!items.length || total === 0) {
-      el.innerHTML = '<div class="text-muted">No data yet.</div>';
+      el.innerHTML = UI.empty('Waiting for your first signal', 'Data appears here when your agents report in.', 'pulse');
       return;
     }
     el.innerHTML = `

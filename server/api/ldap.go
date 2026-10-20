@@ -102,11 +102,8 @@ func (s *Server) authenticateLDAP(ctx context.Context, username, password string
 	}
 
 	email := firstNonEmpty(entry.GetAttributeValue("mail"), entry.GetAttributeValue("userPrincipalName"), username+"@ldap.local")
-	role := settings.DefaultRole
-	groupScopes := []string{}
-	if mappings, err := s.db.ListLDAPGroupMappings(ctx); err == nil {
-		role, groupScopes = resolveLDAPMappings(entry.GetAttributeValues("memberOf"), settings.DefaultRole, mappings)
-	}
+	role, groupScopes, err := storedLDAPAccess(ctx, entry.GetAttributeValues("memberOf"), settings.DefaultRole, s.db)
+	if err != nil { return nil, err }
 	user, err := s.db.CreateOrUpdateLDAPUser(ctx, username, email, role)
 	if err != nil {
 		return nil, err
@@ -115,6 +112,15 @@ func (s *Server) authenticateLDAP(ctx context.Context, username, password string
 		return nil, err
 	}
 	return user, nil
+}
+
+type ldapMappingStore interface { ListLDAPGroupMappings(context.Context) ([]*db.LDAPGroupMapping,error) }
+
+func storedLDAPAccess(ctx context.Context, groups []string, defaultRole string, store ldapMappingStore) (string,[]string,error) {
+	mappings,err:=store.ListLDAPGroupMappings(ctx)
+	if err!=nil { return "",nil,err }
+	role,scopes:=resolveLDAPMappings(groups,defaultRole,mappings)
+	return role,scopes,nil
 }
 
 func firstNonEmpty(values ...string) string {

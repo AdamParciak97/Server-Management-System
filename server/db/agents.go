@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 )
 
 type Agent struct {
@@ -24,19 +23,6 @@ type Agent struct {
 	Status         string    `json:"status"`
 	RegisteredAt   time.Time `json:"registered_at"`
 	AlertCount     int       `json:"alert_count,omitempty"`
-}
-
-func (d *DB) RegisterAgent(ctx context.Context, hostname, certFP, version string) (*Agent, error) {
-	id := uuid.New().String()
-	_, err := d.Pool.Exec(ctx, `
-		INSERT INTO agents (id, hostname, agent_version, cert_fingerprint, status)
-		VALUES ($1, $2, $3, $4, 'online')
-		ON CONFLICT (id) DO NOTHING`,
-		id, hostname, version, certFP)
-	if err != nil {
-		return nil, err
-	}
-	return d.GetAgent(ctx, id)
 }
 
 func (d *DB) GetAgent(ctx context.Context, id string) (*Agent, error) {
@@ -122,25 +108,6 @@ func (d *DB) MarkOfflineAgents(ctx context.Context, threshold time.Duration) (in
 		return 0, err
 	}
 	return int(tag.RowsAffected()), nil
-}
-
-func (d *DB) ValidateRegistrationToken(ctx context.Context, token string) (bool, error) {
-	var used bool
-	err := d.Pool.QueryRow(ctx, `
-		SELECT used FROM registration_tokens
-		WHERE token = $1
-		  AND (expires_at IS NULL OR expires_at > NOW())`, token).Scan(&used)
-	if err != nil {
-		return false, err
-	}
-	return !used, nil
-}
-
-func (d *DB) ConsumeRegistrationToken(ctx context.Context, token, agentID string) error {
-	_, err := d.Pool.Exec(ctx, `
-		UPDATE registration_tokens SET used = true, used_at = NOW(), used_by = $2
-		WHERE token = $1`, token, agentID)
-	return err
 }
 
 type scannable interface {

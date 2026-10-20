@@ -60,6 +60,7 @@ func (b *Buffer) Save(ctx context.Context, report *shared.AgentReport) error {
 }
 
 // Pending returns buffered reports ordered by creation time.
+// Read or decode errors return no batch and leave all stored reports intact.
 func (b *Buffer) Pending(ctx context.Context, limit int) ([]*shared.AgentReport, []int64, error) {
 	rows, err := b.db.QueryContext(ctx, `
 		SELECT id, payload FROM buffered_reports
@@ -75,16 +76,19 @@ func (b *Buffer) Pending(ctx context.Context, limit int) ([]*shared.AgentReport,
 		var id int64
 		var payload string
 		if err := rows.Scan(&id, &payload); err != nil {
-			continue
+			return nil, nil, fmt.Errorf("scan buffered report: %w", err)
 		}
 		var r shared.AgentReport
 		if err := json.Unmarshal([]byte(payload), &r); err != nil {
-			continue
+			return nil, nil, fmt.Errorf("decode buffered report %d: %w", id, err)
 		}
 		reports = append(reports, &r)
 		ids = append(ids, id)
 	}
-	return reports, ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read buffered reports: %w", err)
+	}
+	return reports, ids, nil
 }
 
 // Delete removes a successfully sent report from the buffer.

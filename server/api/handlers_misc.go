@@ -2,18 +2,15 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 	"github.com/sms/server-mgmt/server/db"
 )
 
@@ -47,151 +44,10 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAcknowledgeAlert(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if s.isScoped(s.getClaims(r.Context())) {
-		alerts, err := s.db.ListAlerts(r.Context(), false)
-		if err == nil {
-			allowed := false
-			for _, alert := range alerts {
-				if alert.ID != id || alert.AgentID == nil {
-					continue
-				}
-				agent, agentErr := s.db.GetAgent(r.Context(), *alert.AgentID)
-				if agentErr == nil && s.canAccessGroup(s.getClaims(r.Context()), agent.GroupID) {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				respondError(w, http.StatusForbidden, "alert outside allowed scope")
-				return
-			}
-		}
-	}
-	user := getUserFromCtx(r.Context())
-	userID := ""
-	if user != nil {
-		userID = user.UserID
-	}
-	if err := s.db.AcknowledgeAlert(r.Context(), id, userID); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to acknowledge alert")
-		return
-	}
-	respondOK(w, map[string]string{"status": "acknowledged"})
+	s.scopedMutation(w, r, s.db, "alert")
 }
 
 // ─── Packages ─────────────────────────────────────────────────────────────────
-
-func (s *Server) handlePackageUpload(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(500 << 20); err != nil { // 500MB
-		respondError(w, http.StatusBadRequest, "failed to parse form")
-		return
-	}
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "file required")
-		return
-	}
-	defer file.Close()
-
-	name := r.FormValue("name")
-	version := r.FormValue("version")
-	osTarget := r.FormValue("os_target")
-	archTarget := r.FormValue("arch_target")
-	description := r.FormValue("description")
-
-	if name == "" || version == "" {
-		respondError(w, http.StatusBadRequest, "name and version required")
-		return
-	}
-
-	// Read file and compute hash
-	data, err := io.ReadAll(file)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to read file")
-		return
-	}
-
-	h := sha256.Sum256(data)
-	sha256str := fmt.Sprintf("%x", h)
-
-	// Save file
-	if err := os.MkdirAll(s.uploadDir, 0755); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to create upload dir")
-		return
-	}
-	filename := fmt.Sprintf("%s_%s_%s", uuid.New().String(), name, filepath.Base(header.Filename))
-	filePath := filepath.Join(s.uploadDir, filename)
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to save file")
-		return
-	}
-
-	user := getUserFromCtx(r.Context())
-	var uploaderID *string
-	if user != nil {
-		uploaderID = &user.UserID
-	}
-
-	pkg, err := s.db.CreatePackage(r.Context(), db.PackageRecord{
-		Name:        name,
-		Version:     version,
-		OSTarget:    osTarget,
-		ArchTarget:  archTarget,
-		FilePath:    filePath,
-		FileSize:    int64(len(data)),
-		SHA256:      sha256str,
-		Description: description,
-		UploadedBy:  uploaderID,
-	})
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to save package record")
-		return
-	}
-
-	respondOK(w, pkg)
-}
-
-func (s *Server) handleListPackages(w http.ResponseWriter, r *http.Request) {
-	pkgs, err := s.db.ListPackages(r.Context())
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to list packages")
-		return
-	}
-	if pkgs == nil {
-		pkgs = []*db.PackageRecord{}
-	}
-	respondOK(w, pkgs)
-}
-
-func (s *Server) handlePackageDownload(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	pkg, err := s.db.GetPackage(r.Context(), id)
-	if err != nil {
-		respondError(w, http.StatusNotFound, "package not found")
-		return
-	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filepath.Base(pkg.FilePath)))
-	http.ServeFile(w, r, pkg.FilePath)
-}
-
-func (s *Server) handleDeletePackage(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	pkg, err := s.db.GetPackage(r.Context(), id)
-	if err != nil {
-		respondError(w, http.StatusNotFound, "package not found")
-		return
-	}
-	if err := s.db.DeletePackage(r.Context(), id); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to delete package")
-		return
-	}
-	if pkg.FilePath != "" {
-		_ = os.Remove(pkg.FilePath)
-	}
-	respondOK(w, map[string]string{"status": "deleted"})
-}
 
 // ─── Users ────────────────────────────────────────────────────────────────────
 
@@ -312,85 +168,15 @@ func (s *Server) handleSetUserScopes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		CurrentPassword string `json:"current_password"`
-		NewPassword     string `json:"new_password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request")
-		return
-	}
-	if len(req.NewPassword) < 8 {
-		respondError(w, http.StatusBadRequest, "new password must be at least 8 characters")
-		return
-	}
-
-	user := getUserFromCtx(r.Context())
-	if user == nil {
-		respondError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	userRecord, err := s.db.GetUserByID(r.Context(), user.UserID)
-	if err != nil {
-		respondError(w, http.StatusNotFound, "user not found")
-		return
-	}
-	if userRecord.AuthSource == "ldap" {
-		respondError(w, http.StatusBadRequest, "password is managed by ldap for this account")
-		return
-	}
-
-	hash, err := s.db.GetUserPasswordHash(r.Context(), user.UserID)
-	if err != nil {
-		respondError(w, http.StatusNotFound, "user not found")
-		return
-	}
-	if !s.db.VerifyPassword(hash, req.CurrentPassword) {
-		respondError(w, http.StatusBadRequest, "current password is incorrect")
-		return
-	}
-	if err := s.db.UpdateUserPassword(r.Context(), user.UserID, req.NewPassword); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to change password")
-		return
-	}
-	respondOK(w, map[string]string{"status": "password_changed"})
+	s.changePassword(w, r, s.db)
 }
 
 func (s *Server) handleGetLDAPSettings(w http.ResponseWriter, r *http.Request) {
-	values, err := s.db.GetAllSystemConfig(r.Context())
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to load ldap settings")
-		return
-	}
-	respondOK(w, map[string]string{
-		"ldap_enabled":       values["ldap_enabled"],
-		"ldap_server_url":    values["ldap_server_url"],
-		"ldap_bind_dn":       values["ldap_bind_dn"],
-		"ldap_bind_password": values["ldap_bind_password"],
-		"ldap_base_dn":       values["ldap_base_dn"],
-		"ldap_user_filter":   values["ldap_user_filter"],
-		"ldap_start_tls":     values["ldap_start_tls"],
-		"ldap_default_role":  values["ldap_default_role"],
-	})
+	s.getIntegrationSettings(w, r, s.db, ldapSettingsSpec)
 }
 
 func (s *Server) handleSetLDAPSettings(w http.ResponseWriter, r *http.Request) {
-	var req map[string]string
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request")
-		return
-	}
-	keys := []string{
-		"ldap_enabled", "ldap_server_url", "ldap_bind_dn", "ldap_bind_password",
-		"ldap_base_dn", "ldap_user_filter", "ldap_start_tls", "ldap_default_role",
-	}
-	for _, key := range keys {
-		if err := s.db.SetSystemConfig(r.Context(), key, req[key]); err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to save ldap settings")
-			return
-		}
-	}
-	respondOK(w, map[string]string{"status": "saved"})
+	s.setIntegrationSettings(w, r, s.db, ldapSettingsSpec)
 }
 
 func (s *Server) handleListLDAPGroupMappings(w http.ResponseWriter, r *http.Request) {
@@ -441,39 +227,11 @@ func (s *Server) handleDeleteLDAPGroupMapping(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleGetSMTPSettings(w http.ResponseWriter, r *http.Request) {
-	values, err := s.db.GetAllSystemConfig(r.Context())
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to load smtp settings")
-		return
-	}
-	respondOK(w, map[string]string{
-		"smtp_enabled":  values["smtp_enabled"],
-		"smtp_host":     values["smtp_host"],
-		"smtp_port":     values["smtp_port"],
-		"smtp_username": values["smtp_username"],
-		"smtp_password": values["smtp_password"],
-		"smtp_from":     values["smtp_from"],
-		"smtp_to":       values["smtp_to"],
-	})
+	s.getIntegrationSettings(w, r, s.db, smtpSettingsSpec)
 }
 
 func (s *Server) handleSetSMTPSettings(w http.ResponseWriter, r *http.Request) {
-	var req map[string]string
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request")
-		return
-	}
-	keys := []string{
-		"smtp_enabled", "smtp_host", "smtp_port", "smtp_username",
-		"smtp_password", "smtp_from", "smtp_to",
-	}
-	for _, key := range keys {
-		if err := s.db.SetSystemConfig(r.Context(), key, req[key]); err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to save smtp settings")
-			return
-		}
-	}
-	respondOK(w, map[string]string{"status": "saved"})
+	s.setIntegrationSettings(w, r, s.db, smtpSettingsSpec)
 }
 
 func (s *Server) handlePermissionCatalog(w http.ResponseWriter, r *http.Request) {
@@ -503,12 +261,22 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
+	if s.isScoped(s.getClaims(r.Context())) { respondError(w,403,"creating groups requires global access"); return }
 	var req struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
-		respondError(w, http.StatusBadRequest, "name required")
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&req) != nil || decoder.Decode(new(any)) != io.EOF {
+		respondError(w, http.StatusBadRequest, "invalid group request")
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	req.Description = strings.TrimSpace(req.Description)
+	if req.Name == "" || utf8.RuneCountInString(req.Name) > 100 || utf8.RuneCountInString(req.Description) > 500 || strings.IndexFunc(req.Name, unicode.IsControl) >= 0 || strings.IndexFunc(req.Description, unicode.IsControl) >= 0 {
+		respondError(w, http.StatusBadRequest, "invalid group name or description")
 		return
 	}
 	group, err := s.db.CreateGroup(r.Context(), req.Name, req.Description)
@@ -520,28 +288,11 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := s.db.DeleteGroup(r.Context(), id); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to delete group")
-		return
-	}
-	respondOK(w, map[string]string{"status": "deleted"})
+	s.groupResource(w, r, s.db)
 }
 
 func (s *Server) handleSetRequiredAgents(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	var req struct {
-		Agents []string `json:"agents"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request")
-		return
-	}
-	if err := s.db.SetRequiredAgents(r.Context(), id, req.Agents); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to set required agents")
-		return
-	}
-	respondOK(w, map[string]string{"status": "ok"})
+	s.groupRequirements(w, r, s.db)
 }
 
 func (s *Server) handleListCompliancePolicies(w http.ResponseWriter, r *http.Request) {
@@ -592,6 +343,7 @@ func (s *Server) handleCreateCompliancePolicy(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	if !s.canAccessGroup(s.getClaims(r.Context()), groupID) { respondError(w,403,"policy outside allowed scope"); return }
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
@@ -625,23 +377,7 @@ func (s *Server) handleCreateCompliancePolicy(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleDeleteCompliancePolicy(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if s.isScoped(s.getClaims(r.Context())) {
-		policies, err := s.db.ListCompliancePolicies(r.Context())
-		if err == nil {
-			for _, policy := range policies {
-				if policy.ID == id && policy.GroupID != nil && !s.canAccessGroup(s.getClaims(r.Context()), policy.GroupID) {
-					respondError(w, http.StatusForbidden, "policy outside allowed scope")
-					return
-				}
-			}
-		}
-	}
-	if err := s.db.DeleteCompliancePolicy(r.Context(), id); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to delete policy")
-		return
-	}
-	respondOK(w, map[string]string{"status": "deleted"})
+	s.scopedMutation(w, r, s.db, "policy")
 }
 
 func (s *Server) handleListComplianceExceptions(w http.ResponseWriter, r *http.Request) {
@@ -742,66 +478,10 @@ func (s *Server) handleCreateComplianceException(w http.ResponseWriter, r *http.
 }
 
 func (s *Server) handleDeleteComplianceException(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if s.isScoped(s.getClaims(r.Context())) {
-		items, err := s.db.ListComplianceExceptions(r.Context())
-		if err == nil {
-			for _, item := range items {
-				if item == nil || item.ID != id {
-					continue
-				}
-				agent, agentErr := s.db.GetAgent(r.Context(), item.AgentID)
-				if agentErr != nil || !s.canAccessGroup(s.getClaims(r.Context()), agent.GroupID) {
-					respondError(w, http.StatusForbidden, "exception outside allowed scope")
-					return
-				}
-				break
-			}
-		}
-	}
-	if err := s.db.DeleteComplianceException(r.Context(), id); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to delete compliance exception")
-		return
-	}
-	respondOK(w, map[string]string{"status": "deleted"})
+	s.scopedMutation(w, r, s.db, "exception")
 }
 
 // ─── Registration Tokens ──────────────────────────────────────────────────────
-
-func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
-	tokens, err := s.db.ListRegistrationTokens(r.Context())
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to list tokens")
-		return
-	}
-	if tokens == nil {
-		tokens = []*db.RegToken{}
-	}
-	respondOK(w, tokens)
-}
-
-func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ExpiresAt *time.Time `json:"expires_at,omitempty"`
-		Note      string     `json:"note"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-
-	user := getUserFromCtx(r.Context())
-	var userID *string
-	if user != nil {
-		userID = &user.UserID
-	}
-
-	token, err := s.db.CreateRegistrationToken(r.Context(), userID, req.ExpiresAt, req.Note)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to create token")
-		return
-	}
-	respondOK(w, token)
-}
-
-// ─── Audit Log ────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 	userID := r.URL.Query().Get("user_id")

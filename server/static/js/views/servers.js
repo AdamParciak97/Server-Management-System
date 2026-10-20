@@ -3,39 +3,75 @@
 Views.Servers = (() => {
   let allServers = [];
   let groups = [];
+  let page = 1;
+  let pageData = null;
+  let savedViews = [];
+  let viewsVersion = 0;
+  let selectedView = '';
+  let savingView = false;
+  let mounted = null;
+  let reloadVersion = 0;
+  let reloadFailed = false;
+  let detailVersion = 0;
   let historyById = {};
   let currentHistory = [];
   let currentBaseline = null;
   let currentTimeline = [];
+  let activeDetailId = null;
+  let detailOpener = null;
+  const detailSections = ['identity', 'reports', 'commands', 'timeline'];
 
   async function render(container) {
+    mounted = container;
+    page = 1;
+    pageData = null;
+    savedViews = [];
+    selectedView = '';
+    savingView = false;
+    allServers = [];
+    groups = [];
+    reloadFailed = true;
+    activeDetailId = null;
+    detailOpener = null;
     container.innerHTML = `
-      <div class="page-header">
-        <h2>Servers</h2>
+      <div class="page-header inventory-header">
+        <div><span class="eyebrow">INFRASTRUCTURE / INVENTORY</span><h2>Server inventory</h2><p class="page-subtitle">Know your fleet. Follow every host from heartbeat to history.</p></div>
         <div class="page-actions">
-          <button class="btn btn-sm" onclick="Views.Servers.reload()">&#8635; Refresh</button>
-          <button class="btn btn-sm" onclick="API.exportCSV()">&#8659; Export CSV</button>
+          <button id="servers-refresh" class="btn btn-sm" onclick="Views.Servers.reload()">${UI.icon('refresh')} Refresh</button>
+          <button class="btn btn-sm" onclick="API.exportCSV()">Export all CSV</button>
+          <button class="btn btn-primary" onclick="App.navigate('packages')">${UI.icon('box')} Get agent</button>
         </div>
       </div>
-      <div class="card mb-2">
-        <div class="filters">
-          <input type="text" id="filter-search" placeholder="Search hostname, IP..." style="min-width:200px">
-          <select id="filter-status">
+      <div id="inventory-summary" class="inventory-summary" aria-label="Fleet summary"></div>
+      <div class="card mb-2 inventory-card">
+        <div class="section-heading"><div><h3 class="section-title">Registered hosts</h3><p class="page-subtitle">Search, narrow down and inspect your infrastructure.</p></div><span id="servers-count" class="text-muted" role="status"></span></div>
+        <div class="inventory-workspace">
+          <div><span class="eyebrow">YOUR WORKSPACE</span><label for="inventory-view">Saved views<select id="inventory-view"><option value="">Unsaved filters</option></select></label></div>
+          <div class="page-actions"><button class="btn btn-sm" id="inventory-save" onclick="Views.Servers.editView(false)">Save as new view</button><button class="btn btn-sm" id="inventory-update" onclick="Views.Servers.editView(true)" disabled>Update view</button><button class="btn btn-sm" id="inventory-delete" onclick="Views.Servers.deleteView()" disabled>Delete view</button></div>
+          <p id="inventory-views-message" class="text-muted" role="status">Private to your account · filters always use your current access.</p>
+          <button id="inventory-views-retry" class="btn btn-sm" onclick="Views.Servers.loadViews()" hidden>Retry saved views</button>
+        </div>
+        <div class="filters inventory-filters">
+          <label class="inventory-search" for="filter-search">Search hosts<input type="search" id="filter-search" placeholder="Hostname, FQDN or IP address" maxlength="200"></label>
+          <label for="filter-status">Status<select id="filter-status">
             <option value="">All statuses</option>
             <option value="online">Online</option>
             <option value="offline">Offline</option>
             <option value="unknown">Unknown</option>
-          </select>
-          <select id="filter-group">
+          </select></label>
+          <label for="filter-group">Group<select id="filter-group">
             <option value="">All groups</option>
-          </select>
-          <select id="filter-os">
+            <option value="__ungrouped__">No group</option>
+          </select></label>
+          <label for="filter-os">Operating system<select id="filter-os">
             <option value="">All OS</option>
             <option value="linux">Linux</option>
             <option value="windows">Windows</option>
-          </select>
+          </select></label>
+          <label for="filter-sort">Sort by<select id="filter-sort"><option value="name">Hostname A–Z</option><option value="seen">Last seen: newest</option><option value="status">Offline first</option></select></label>
         </div>
-        <div class="table-wrap">
+        <div class="inventory-filter-footer"><span id="servers-filter-note" class="text-muted">All registered hosts</span><button class="btn btn-sm" onclick="Views.Servers.clearFilters()">Clear filters</button></div>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Server inventory table">
           <table id="servers-table">
             <thead><tr>
               <th>Hostname</th><th>IP</th><th>OS</th><th>Group</th>
@@ -46,84 +82,327 @@ Views.Servers = (() => {
             </tbody>
           </table>
         </div>
+        <div class="inventory-pagination" aria-label="Inventory pagination">
+          <label for="inventory-page-size">Rows per page<select id="inventory-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label>
+          <span id="inventory-page-note" role="status" aria-live="polite"></span>
+          <div class="page-actions"><button id="inventory-prev" class="btn btn-sm" onclick="Views.Servers.changePage(-1)" disabled>Previous</button><button id="inventory-next" class="btn btn-sm" onclick="Views.Servers.changePage(1)" disabled>Next</button></div>
+        </div>
       </div>
-      <div id="server-detail" class="hidden"></div>
+      <div id="server-detail" class="hidden" tabindex="-1" role="region" aria-label="Server details"></div>
     `;
 
-    await reload();
     setupFilters();
+    await Promise.all([reload(), loadViews()]);
   }
 
   async function reload() {
+    const tbody = document.getElementById('servers-tbody');
+    if (!tbody) return;
+    const version = ++reloadVersion;
+    const filters = readFilters();
+    const requestedPage = page;
+    setPagingBusy(true);
+    if (reloadFailed) setFiltersDisabled(true);
+    const isCurrent = () => version === reloadVersion &&
+      document.getElementById('servers-tbody') === tbody;
+    const refresh = document.getElementById('servers-refresh');
+    if (refresh) { refresh.disabled = true; refresh.innerHTML = `${UI.icon('refresh')} Refreshing…`; }
+    const summary = document.getElementById('inventory-summary');
+    if (summary) summary.innerHTML = '<p class="text-muted" role="status">Loading fleet summary…</p>';
     try {
-      const [sResp, gResp] = await Promise.all([API.getServers(), API.listGroups()]);
-      allServers = (sResp && sResp.data) ? sResp.data : [];
+      const [sResp, gResp] = await Promise.all([API.getInventory({...filters, page: requestedPage}), API.listInventoryGroups()]);
+      // Only the latest reload for the same mounted view may update its data.
+      if (!isCurrent()) return;
+      const data = sResp?.data;
+      if (!sResp?.success && sResp?.success !== undefined) throw new Error('Invalid inventory response');
+      if (!data || !Array.isArray(data.items) || !Number.isInteger(data.total) || data.total < 0 ||
+          !Number.isInteger(data.page) || data.page < 1 || data.page_size !== filters.page_size ||
+          data.items.length > filters.page_size || !data.summary ||
+          !['total', 'online', 'offline', 'unknown'].every(key => Number.isSafeInteger(data.summary[key]) && data.summary[key] >= 0) ||
+          data.summary.online + data.summary.offline + data.summary.unknown !== data.summary.total || data.total > data.summary.total) {
+        throw new Error('Invalid inventory response');
+      }
+      pageData = data;
+      page = data.page;
+      allServers = data.items;
       groups = (gResp && gResp.data) ? gResp.data : [];
       populateGroupFilter();
+      reloadFailed = false;
+      renderSummary();
+      renderFilterNote(filters);
       renderTable(allServers);
+      renderPaging();
     } catch (err) {
-      document.getElementById('servers-tbody').innerHTML =
-        `<tr><td colspan="7" class="error-msg">${App.escHtml(err.message)}</td></tr>`;
+      if (!isCurrent()) return;
+      reloadFailed = true;
+      pageData = null;
+      setPagingBusy(false);
+      const pageNote = document.getElementById('inventory-page-note');
+      if (pageNote) pageNote.textContent = 'Page unavailable';
+      const count = document.getElementById('servers-count');
+      if (count) count.textContent = '';
+      if (summary) summary.innerHTML = '<p class="text-muted">Fleet summary unavailable. Refresh to try again.</p>';
+      tbody.innerHTML =
+        `<tr><td colspan="7"><div class="empty-state" role="alert">${UI.icon('server')}<strong>Inventory could not be loaded</strong><p>${App.escHtml(err.message)}</p><button class="btn" onclick="Views.Servers.reload()">Try again</button></div></td></tr>`;
+    } finally {
+      if (isCurrent()) {
+        setFiltersDisabled(false);
+        if (refresh) { refresh.disabled = false; refresh.innerHTML = `${UI.icon('refresh')} Refresh`; }
+      }
     }
+  }
+
+  function renderSummary() {
+    const el = document.getElementById('inventory-summary');
+    if (!el) return;
+    const counts = pageData.summary;
+    el.innerHTML = [
+      ['', 'Total hosts', counts.total, 'Within your current access', 'server'],
+      ['online', 'Online', counts.online, 'Reported online by API', 'pulse'],
+      ['offline', 'Offline', counts.offline, 'Hosts to investigate', 'bell'],
+      ['unknown', 'Unknown', counts.unknown, 'Status not established', 'history']
+    ].map(([status, label, count, note, icon]) => `<button class="inventory-stat ${status}" data-status="${status}" aria-pressed="false" onclick="Views.Servers.filterStatus('${status}')"><span>${UI.icon(icon)} ${label}</span><strong>${count}</strong><small>${note}</small></button>`).join('');
+  }
+
+  function filterStatus(status) {
+    const el = document.getElementById('filter-status');
+    if (el) { el.value = status; return applyFilters(); }
+  }
+
+  function clearFilters() {
+    ['filter-search', 'filter-status', 'filter-group', 'filter-os'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    page = 1;
+    const loading = reload();
+    document.getElementById('filter-search')?.focus?.();
+    return loading;
   }
 
   function populateGroupFilter() {
     const sel = document.getElementById('filter-group');
     if (!sel) return;
     const cur = sel.value;
-    sel.innerHTML = '<option value="">All groups</option>';
+    sel.innerHTML = '<option value="">All groups</option><option value="__ungrouped__">No group</option>';
     groups.forEach(g => {
       const opt = document.createElement('option');
       opt.value = g.id;
       opt.textContent = g.name;
       sel.appendChild(opt);
     });
+    if (cur && cur !== '__ungrouped__' && !groups.some(g => g.id === cur)) {
+      const opt = document.createElement('option');
+      opt.value = cur; opt.textContent = 'Saved group (unavailable)'; sel.appendChild(opt);
+    }
     sel.value = cur;
   }
 
+  function readFilters() {
+    const value = name => document.getElementById(`filter-${name}`)?.value || '';
+    return {search: value('search').trim(), status: value('status'), group: value('group'), os: value('os'),
+      sort: value('sort') || 'name', page_size: Number(document.getElementById('inventory-page-size')?.value || 25)};
+  }
+
   function setupFilters() {
-    const inputs = ['filter-search', 'filter-status', 'filter-group', 'filter-os'];
-    inputs.forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.addEventListener('input', applyFilters);
+    ['filter-search', 'filter-status', 'filter-group', 'filter-os', 'filter-sort', 'inventory-page-size'].forEach(id => {
+      document.getElementById(id)?.addEventListener('input', applyFilters);
     });
+    document.getElementById('inventory-view')?.addEventListener('change', applyView);
   }
 
   function applyFilters() {
-    const search = document.getElementById('filter-search').value.toLowerCase();
-    const status = document.getElementById('filter-status').value;
-    const group = document.getElementById('filter-group').value;
-    const os = document.getElementById('filter-os').value;
+    page = 1;
+    // Keep a load error visible until explicit retry; never filter a stale page.
+    if (reloadFailed) return;
+    return reload();
+  }
 
-    const filtered = allServers.filter(s => {
-      if (search && !s.hostname.toLowerCase().includes(search) &&
-          !(s.ip_addresses || []).join(' ').includes(search)) return false;
-      if (status && s.status !== status) return false;
-      if (group && s.group_id !== group) return false;
-      if (os && !(s.os || '').toLowerCase().includes(os)) return false;
-      return true;
+  function renderFilterNote(filters) {
+    const active = [filters.search, filters.status, filters.group, filters.os].filter(Boolean).length;
+    const note = document.getElementById('servers-filter-note');
+    if (note) note.textContent = active ? `${active} active filter${active === 1 ? '' : 's'} · Filtered on server` : 'All registered hosts';
+    document.getElementById('inventory-summary')?.querySelectorAll?.('[data-status]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.status === filters.status));
     });
-    renderTable(filtered);
+  }
+
+  function setPagingBusy(busy) {
+    for (const id of ['inventory-prev', 'inventory-next']) {
+      const button = document.getElementById(id);
+      if (button && busy) button.disabled = true;
+    }
+    document.getElementById('servers-table')?.setAttribute('aria-busy', String(busy));
+  }
+
+  function setFiltersDisabled(disabled) {
+    for (const id of ['filter-search', 'filter-status', 'filter-group', 'filter-os', 'filter-sort', 'inventory-page-size']) {
+      const input = document.getElementById(id);
+      if (input) input.disabled = disabled;
+    }
+  }
+
+  function renderPaging() {
+    setPagingBusy(false);
+    const last = Math.max(1, Math.ceil(pageData.total / pageData.page_size));
+    const note = document.getElementById('inventory-page-note');
+    if (note) note.textContent = `Page ${page} of ${last} · ${pageData.total} matching hosts`;
+    const prev = document.getElementById('inventory-prev'), next = document.getElementById('inventory-next');
+    if (prev) prev.disabled = page <= 1;
+    if (next) next.disabled = page >= last;
+  }
+
+  function changePage(direction) {
+    if (reloadFailed || !pageData || document.getElementById('servers-refresh')?.disabled) return;
+    const next = page + direction;
+    if (next < 1 || next > Math.max(1, Math.ceil(pageData.total / pageData.page_size))) return;
+    page = next;
+    return reload();
+  }
+
+  async function loadViews() {
+    const select = document.getElementById('inventory-view');
+    if (!select) return;
+    const version = ++viewsVersion;
+    const current = () => version === viewsVersion && document.getElementById('inventory-view') === select;
+    const message = document.getElementById('inventory-views-message');
+    const retry = document.getElementById('inventory-views-retry');
+    try {
+      const response = await API.listInventoryViews();
+      if (!current()) return;
+      if (!Array.isArray(response?.data) || response.success === false) throw new Error('Invalid saved views response');
+      savedViews = response.data;
+      if (!savedViews.some(v => v.id === selectedView)) selectedView = '';
+      renderViews();
+      if (message) message.textContent = `${savedViews.length}/20 private views · current access applies every time`;
+      if (retry) retry.hidden = true;
+    } catch (err) {
+      if (!current()) return;
+      if (message) message.textContent = `Saved views unavailable: ${err.message}`;
+      if (retry) retry.hidden = false;
+    }
+  }
+
+  function renderViews() {
+    const select = document.getElementById('inventory-view');
+    if (!select) return;
+    select.innerHTML = '<option value="">Unsaved filters</option>';
+    savedViews.forEach(view => {
+      const option = document.createElement('option');
+      option.value = view.id;
+      option.textContent = view.name;
+      select.appendChild(option);
+    });
+    select.value = selectedView;
+    for (const id of ['inventory-update', 'inventory-delete']) {
+      const button = document.getElementById(id);
+      if (button) button.disabled = !selectedView || savingView;
+    }
+  }
+
+  function applyView() {
+    selectedView = document.getElementById('inventory-view')?.value || '';
+    const view = savedViews.find(item => item.id === selectedView);
+    renderViews();
+    if (!view) return;
+    for (const key of ['search', 'status', 'group', 'os', 'sort']) {
+      const el = document.getElementById(`filter-${key}`);
+      if (!el) continue;
+      // Preserve an unavailable group as an explicit filter: never silently widen it.
+      if (key === 'group' && view.filters[key] && !groups.some(g => g.id === view.filters[key]) && view.filters[key] !== '__ungrouped__') {
+        const option = document.createElement('option'); option.value = view.filters[key]; option.textContent = 'Saved group (access may have changed)'; el.appendChild(option);
+      }
+      el.value = view.filters[key] || '';
+    }
+    const size = document.getElementById('inventory-page-size');
+    if (size) {
+      if (![25, 50, 100].includes(view.filters.page_size)) {
+        const option = document.createElement('option');
+        option.value = String(view.filters.page_size); option.textContent = String(view.filters.page_size); size.appendChild(option);
+      }
+      size.value = String(view.filters.page_size);
+    }
+    page = 1;
+    return reload();
+  }
+
+  function editView(update) {
+    if (!mounted || savingView) return;
+    const view = update ? savedViews.find(item => item.id === selectedView) : null;
+    if (update && !view) return;
+    const filters = readFilters();
+    const dialog = UI.dialog(mounted, update ? 'Update saved view' : 'Save your workspace', `
+      <form id="inventory-view-form"><p class="text-muted">Save filters, sorting and rows per page. This view is private to your account.</p>
+      <label for="inventory-view-name">View name<input id="inventory-view-name" required maxlength="80" value="${App.escHtml(view?.name || '')}" placeholder="e.g. Offline production hosts"></label>
+      <p class="text-muted">${App.escHtml([filters.search || 'Any hostname', filters.status || 'All statuses', filters.os || 'All systems'].join(' · '))}</p>
+      <p id="inventory-save-error" role="alert"></p><button class="btn btn-primary" type="submit">${update ? 'Update view' : 'Save view'}</button></form>`, 'INVENTORY / PRIVATE VIEWS');
+    dialog.querySelector('form').addEventListener('submit', async event => {
+      event.preventDefault();
+      if (savingView) return;
+      const name = dialog.querySelector('#inventory-view-name').value.trim();
+      if (!name) return;
+      savingView = true;
+      const button = dialog.querySelector('[type="submit"]'); button.disabled = true;
+      const select = document.getElementById('inventory-view');
+      try {
+        const response = await API.saveInventoryView(view?.id || '', {name, filters});
+        if (document.getElementById('inventory-view') !== select || !dialog.isConnected) return;
+        if (response?.success !== true || !response.data?.id) throw new Error('The server did not confirm saving the view. Refresh saved views before retrying.');
+        selectedView = response.data.id;
+        dialog.close();
+        await loadViews();
+      } catch (err) {
+        if (dialog.isConnected) dialog.querySelector('#inventory-save-error').textContent = err.message;
+      } finally {
+        if (document.getElementById('inventory-view') === select) { savingView = false; renderViews(); }
+        if (dialog.isConnected) button.disabled = false;
+      }
+    });
+    dialog.querySelector('#inventory-view-name').focus();
+  }
+
+  function deleteView() {
+    const view = savedViews.find(item => item.id === selectedView);
+    if (!view || savingView || !mounted) return;
+    const dialog = UI.dialog(mounted, 'Delete saved view', `<p>Delete <strong>${App.escHtml(view.name)}</strong>? Hosts and current filters are kept.</p><p role="alert" id="inventory-delete-error"></p><button class="btn btn-danger" id="inventory-delete-confirm">Delete view</button>`, 'INVENTORY / PRIVATE VIEWS');
+    const button = dialog.querySelector('#inventory-delete-confirm');
+    button.addEventListener('click', async () => {
+      if (savingView) return;
+      savingView = true; button.disabled = true;
+      const select = document.getElementById('inventory-view');
+      try {
+        const response = await API.deleteInventoryView(view.id);
+        if (document.getElementById('inventory-view') !== select || !dialog.isConnected) return;
+        if (response?.success !== true || response.data?.deleted !== true) throw new Error('The server did not confirm deletion. Refresh saved views before retrying.');
+        selectedView = ''; dialog.close(); await loadViews();
+      } catch (err) { if (dialog.isConnected) dialog.querySelector('#inventory-delete-error').textContent = err.message; }
+      finally {
+        if (document.getElementById('inventory-view') === select) { savingView = false; renderViews(); }
+        if (dialog.isConnected) button.disabled = false;
+      }
+    });
   }
 
   function renderTable(servers) {
     const tbody = document.getElementById('servers-tbody');
     if (!tbody) return;
+    const count = document.getElementById('servers-count');
+    if (count) count.textContent = `Showing ${(servers || []).length} of ${pageData.summary.total} servers`;
     if (!servers || servers.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted" style="padding:2rem">No servers found</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="7" class="empty-table-cell"><div class="empty-state inventory-empty">${UI.icon(pageData.summary.total ? 'search' : 'server')}<strong>${pageData.summary.total ? 'No servers found' : 'Your inventory starts with one agent'}</strong><p>${pageData.summary.total ? 'No hosts match these filters. Clear them to see your registered fleet.' : 'Hosts appear here after an agent registers with this server. Get an agent package to connect your first host.'}</p><button class="btn btn-primary" onclick="${pageData.summary.total ? 'Views.Servers.clearFilters()' : "App.navigate('packages')"}">${pageData.summary.total ? 'Clear filters' : 'Get agent package'}</button></div></td></tr>`;
       return;
     }
     tbody.innerHTML = servers.map(s => `
       <tr>
-        <td class="clickable" onclick="Views.Servers.showDetail('${s.id}')">${App.escHtml(s.hostname)}</td>
+        <td><button class="host-link" onclick="Views.Servers.showDetail('${s.id}')">${UI.icon('server')}<span>${App.escHtml(s.hostname)}<small>${App.escHtml(s.fqdn || 'FQDN not reported')}</small></span></button></td>
         <td>${App.escHtml((s.ip_addresses || []).join(', '))}</td>
         <td>${App.escHtml(s.os || '-')}</td>
         <td>${App.escHtml(s.group_name || '-')}</td>
         <td>${App.timeAgo(s.last_seen)}</td>
         <td>${App.statusBadge(s.status)}</td>
         <td>
-          <button class="btn btn-sm" onclick="Views.Servers.showDetail('${s.id}')">Details</button>
-          <button class="btn btn-sm" onclick="Views.Servers.forceReport('${s.id}')">&#8635; Report</button>
+          <button class="btn btn-sm" aria-label="Inspect ${App.escHtml(s.hostname)}" onclick="Views.Servers.showDetail('${s.id}')">Inspect ${UI.icon('arrow')}</button>
+          <button class="btn btn-sm" aria-label="Request report from ${App.escHtml(s.hostname)}" onclick="Views.Servers.forceReport('${s.id}')">${UI.icon('refresh')} Report</button>
         </td>
       </tr>
     `).join('');
@@ -132,9 +411,18 @@ Views.Servers = (() => {
   async function showDetail(id) {
     const detailEl = document.getElementById('server-detail');
     if (!detailEl) return;
+    const version = ++detailVersion;
+    activeDetailId = id;
+    if (!detailEl.contains?.(document.activeElement)) detailOpener = document.activeElement;
+    const isCurrent = () => version === detailVersion &&
+      document.getElementById('server-detail') === detailEl;
     detailEl.classList.remove('hidden');
-    detailEl.innerHTML = '<div class="card"><span class="spinner"></span> Loading...</div>';
-    detailEl.scrollIntoView({ behavior: 'smooth' });
+    detailEl.innerHTML = '<div class="card detail-loading"><span role="status"><span class="spinner"></span> Loading host details…</span><button class="btn" onclick="Views.Servers.closeDetail()">Close</button></div>';
+    detailEl.scrollIntoView({ behavior: 'auto', block: 'start' });
+    detailEl.focus?.({ preventScroll: true });
+    detailEl.onkeydown = event => {
+      if (event.key === 'Escape') { event.stopPropagation(); closeDetail(); }
+    };
 
     try {
       const [sResp, hResp, cmdsResp, timelineResp] = await Promise.all([
@@ -143,34 +431,44 @@ Views.Servers = (() => {
         API.listCommands(id),
         API.getServerTimeline(id, 25)
       ]);
+      if (!isCurrent()) return;
       const server = sResp && sResp.data ? sResp.data : {};
       const history = hResp && hResp.data ? hResp.data : [];
       const cmds = cmdsResp && cmdsResp.data ? cmdsResp.data : [];
       const timeline = timelineResp && timelineResp.data ? timelineResp.data : [];
-      currentHistory = history;
-      currentTimeline = timeline;
-      historyById = {};
-      history.forEach(r => { historyById[r.id] = r; });
+      let baseline = null;
+      let baselineFailed = false;
       try {
         const baselineResp = await API.getServerBaseline(id);
-        currentBaseline = baselineResp && baselineResp.data ? baselineResp.data : null;
-        if (currentBaseline && currentBaseline.report) {
-          historyById[currentBaseline.report.id] = currentBaseline.report;
-        }
+        baseline = baselineResp && baselineResp.data ? baselineResp.data : null;
       } catch {
-        currentBaseline = null;
+        baselineFailed = true;
+      }
+      // Publish the matching history and baseline only for the active selection.
+      if (!isCurrent()) return;
+      currentHistory = history;
+      currentTimeline = timeline;
+      currentBaseline = baseline;
+      historyById = {};
+      history.forEach(r => { historyById[r.id] = r; });
+      if (currentBaseline && currentBaseline.report) {
+        historyById[currentBaseline.report.id] = currentBaseline.report;
       }
 
       detailEl.innerHTML = `
-        <div class="card">
-          <div class="page-header">
-            <h3>${App.escHtml(server.hostname || 'Unknown')}</h3>
+        <div class="card host-detail-card">
+          <div class="page-header host-detail-header">
+            <div><span class="eyebrow">HOST WORKSPACE</span><h3>${App.escHtml(server.hostname || 'Unknown')}</h3><p class="page-subtitle">${App.escHtml(server.fqdn || server.os || 'Registered host')}</p></div>
             <div class="page-actions">
               ${App.statusBadge(server.status)}
-              <button class="btn btn-sm" onclick="document.getElementById('server-detail').classList.add('hidden')">Close</button>
+              <button class="btn btn-sm" onclick="Views.Servers.closeDetail()">Close</button>
             </div>
           </div>
-          <div class="grid-2 mb-2">
+          <div class="host-detail-nav" role="tablist" aria-label="Host sections">
+            ${[['identity', 'Overview'], ['reports', `Reports · ${history.length}`], ['commands', `Commands · ${Math.min(cmds.length, 10)}`], ['timeline', `Timeline · ${timeline.length}`]].map(([key, label], index) => `<button class="detail-tab" id="host-tab-${key}" role="tab" aria-selected="${index === 0}" aria-controls="host-panel-${key}" tabindex="${index === 0 ? 0 : -1}" onclick="Views.Servers.selectDetailTab('${key}')" onkeydown="Views.Servers.detailTabKey(event, '${key}')">${label}</button>`).join('')}
+          </div>
+          <section id="host-panel-identity" role="tabpanel" aria-labelledby="host-tab-identity" tabindex="0">
+          <div class="grid-2 mb-2 host-facts">
             <div>
               <p><strong>IP:</strong> ${App.escHtml((server.ip_addresses || []).join(', '))}</p>
               <p><strong>OS:</strong> ${App.escHtml(server.os || '-')} ${App.escHtml(server.os_version || '')}</p>
@@ -189,7 +487,7 @@ Views.Servers = (() => {
             <div class="section-title">Group Assignment</div>
             <div class="form-row">
               <div class="form-group">
-                <label>Group</label>
+                <label for="server-group-select">Group</label>
                 <select id="server-group-select">
                   <option value="">No group</option>
                   ${groups.map(group => `
@@ -200,7 +498,9 @@ Views.Servers = (() => {
             </div>
             <button class="btn btn-sm btn-primary" onclick="Views.Servers.assignGroup('${id}')">Save Group</button>
           </div>
-
+          <div class="host-actions"><button class="btn btn-primary" onclick="Views.Servers.forceReport('${id}')">${UI.icon('refresh')} Request report</button><button class="btn" onclick="Views.Commands.showCreateFor('${id}')">${UI.icon('terminal')} Send command</button><button class="btn" onclick="Views.Servers.selectDetailTab('reports', true)">Explore reports ${UI.icon('arrow')}</button></div>
+          </section>
+          <section id="host-panel-reports" role="tabpanel" aria-labelledby="host-tab-reports" tabindex="0" hidden>
           <div class="card mb-2">
             <div class="report-card-header">
               <div class="section-title" style="margin-bottom:0">Baseline Drift</div>
@@ -211,7 +511,7 @@ Views.Servers = (() => {
                 ${renderKV('Baseline Report', App.formatDate(currentBaseline.report ? currentBaseline.report.timestamp : currentBaseline.created_at))}
                 ${renderKV('Pinned At', App.formatDate(currentBaseline.created_at))}
               </div>
-            ` : '<div class="text-muted">No baseline selected for this server yet.</div>'}
+            ` : baselineFailed ? `<div class="error-msg" role="status">Baseline could not be loaded. <button class="btn btn-sm" onclick="Views.Servers.showDetail('${id}')">Retry details</button></div>` : '<div class="text-muted">No baseline selected for this server yet.</div>'}
             <div class="text-muted mt-1">Pick one report as the gold snapshot, then compare the latest report against it.</div>
           </div>
 
@@ -220,21 +520,22 @@ Views.Servers = (() => {
             <div class="section-title">Compare Reports</div>
             <div class="form-row">
               <div class="form-group">
-                <label>Earlier Report</label>
+                <label for="compare-report-from">Earlier Report</label>
                 <select id="compare-report-from">
                   <option value="">Select report</option>
                   ${history.map(r => `<option value="${r.id}">${App.formatDate(r.timestamp)}</option>`).join('')}
                 </select>
               </div>
               <div class="form-group">
-                <label>Later Report</label>
+                <label for="compare-report-to">Later Report</label>
                 <select id="compare-report-to">
                   <option value="">Select report</option>
                   ${history.map(r => `<option value="${r.id}">${App.formatDate(r.timestamp)}</option>`).join('')}
                 </select>
               </div>
             </div>
-            <button class="btn btn-sm btn-primary" onclick="Views.Servers.compareSelectedReports()">Compare</button>
+            <button class="btn btn-sm btn-primary" ${history.length < 2 ? 'disabled' : ''} onclick="Views.Servers.compareSelectedReports()">Compare</button>
+            ${history.length < 2 ? '<p class="text-muted mt-1">Two reports are needed to compare changes.</p>' : ''}
           </div>
           <div class="table-wrap">
             <table>
@@ -248,12 +549,14 @@ Views.Servers = (() => {
                       <button class="btn btn-sm" onclick="Views.Servers.showReport('${r.id}')">View</button>
                       <button class="btn btn-sm" onclick="Views.Servers.setBaseline('${id}','${r.id}')">Set Baseline</button>
                     </td>
-                  </tr>`).join('') : '<tr><td colspan="3" class="text-muted">No reports yet</td></tr>'}
+                  </tr>`).join('') : `<tr><td colspan="3"><div class="empty-state">${UI.icon('history')}<strong>No reports yet</strong><p>Reports arrive from the agent. Request a fresh snapshot to inspect this host.</p><button class="btn" onclick="Views.Servers.forceReport('${id}')">Request report</button></div></td></tr>`}
               </tbody>
             </table>
           </div>
 
-          <div class="section-title mt-2">Recent Commands (${cmds.length})</div>
+          </section>
+          <section id="host-panel-commands" role="tabpanel" aria-labelledby="host-tab-commands" tabindex="0" hidden>
+          <div class="section-title mt-2">Recent Commands (${Math.min(cmds.length, 10)} shown)</div>
           <div class="table-wrap">
             <table>
               <thead><tr><th>Type</th><th>Priority</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
@@ -265,7 +568,7 @@ Views.Servers = (() => {
                     <td>${renderCommandStatus(c.status)}</td>
                     <td>${App.timeAgo(c.created_at)}</td>
                     <td><button class="btn btn-sm" onclick="Views.Commands.showLog('${c.id}')">View</button></td>
-                  </tr>`).join('') || '<tr><td colspan="5" class="text-muted">No commands</td></tr>'}
+                  </tr>`).join('') || '<tr><td colspan="5"><div class="empty-state"><strong>No commands yet</strong><p>Requests and execution results for this host will appear here.</p></div></td></tr>'}
               </tbody>
             </table>
           </div>
@@ -275,6 +578,8 @@ Views.Servers = (() => {
             <button class="btn btn-sm" onclick="Views.Commands.showCreateFor('${id}')">Send Command</button>
           </div>
 
+          </section>
+          <section id="host-panel-timeline" role="tabpanel" aria-labelledby="host-tab-timeline" tabindex="0" hidden>
           <div class="section-title mt-2">Host Timeline (${timeline.length})</div>
           <div class="table-wrap">
             <table>
@@ -288,15 +593,58 @@ Views.Servers = (() => {
                     <td>${App.escHtml(item.title || '-')}</td>
                     <td>${App.escHtml(item.message || '-')}</td>
                   </tr>
-                `).join('') : '<tr><td colspan="5" class="text-muted">No timeline entries yet</td></tr>'}
+                `).join('') : '<tr><td colspan="5"><div class="empty-state"><strong>No timeline entries yet</strong><p>Reports, commands and alerts build this host’s activity history.</p></div></td></tr>'}
               </tbody>
             </table>
           </div>
+          </section>
         </div>
       `;
+      detailEl.querySelectorAll?.('.table-wrap').forEach(el => {
+        el.tabIndex = 0;
+        el.setAttribute('role', 'region');
+        el.setAttribute('aria-label', 'Scrollable host data');
+      });
     } catch (err) {
-      detailEl.innerHTML = `<div class="card error-msg">Error: ${App.escHtml(err.message)}</div>`;
+      if (!isCurrent()) return;
+      detailEl.innerHTML = `<div class="card"><div class="empty-state" role="alert"><strong>Host details unavailable</strong><p>${App.escHtml(err.message)}</p><div class="host-actions"><button class="btn" onclick="Views.Servers.showDetail('${id}')">Try again</button><button class="btn" onclick="Views.Servers.closeDetail()">Close</button></div></div></div>`;
     }
+  }
+
+  function closeDetail() {
+    ++detailVersion;
+    activeDetailId = null;
+    historyById = {};
+    currentHistory = [];
+    currentBaseline = null;
+    currentTimeline = [];
+    document.getElementById('server-detail')?.classList.add('hidden');
+    if (detailOpener?.isConnected) detailOpener.focus();
+  }
+
+  function selectDetailTab(key, focus = false) {
+    if (!detailSections.includes(key)) return;
+    detailSections.forEach(name => {
+      const tab = document.getElementById(`host-tab-${name}`);
+      const panel = document.getElementById(`host-panel-${name}`);
+      if (!tab || !panel) return;
+      tab.setAttribute('aria-selected', String(name === key));
+      tab.tabIndex = name === key ? 0 : -1;
+      panel.hidden = name !== key;
+      if (name === key && focus) tab.focus();
+    });
+  }
+
+  function detailTabKey(event, key) {
+    const index = detailSections.indexOf(key);
+    let next;
+    if (event.key === 'ArrowRight') next = (index + 1) % detailSections.length;
+    else if (event.key === 'ArrowLeft') next = (index + detailSections.length - 1) % detailSections.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = detailSections.length - 1;
+    else return;
+    event.preventDefault();
+    selectDetailTab(detailSections[next], true);
   }
 
   async function forceReport(id) {
@@ -311,22 +659,38 @@ Views.Servers = (() => {
   async function assignGroup(id) {
     const select = document.getElementById('server-group-select');
     if (!select) return;
+    const version = detailVersion;
+    const detailEl = document.getElementById('server-detail');
     try {
       await API.assignGroup(id, select.value);
+      if (version !== detailVersion || document.getElementById('server-detail') !== detailEl) return;
       await reload();
-      await showDetail(id);
+      if (version !== detailVersion || activeDetailId !== id || document.getElementById('server-detail') !== detailEl) return;
+      const refresh = showDetail(id);
+      const refreshVersion = detailVersion;
+      await refresh;
+      if (refreshVersion !== detailVersion || document.getElementById('server-detail') !== detailEl) return;
       alert('Group updated');
     } catch (err) {
+      if (version !== detailVersion || document.getElementById('server-detail') !== detailEl) return;
       alert('Error: ' + err.message);
     }
   }
 
   async function setBaseline(agentID, reportID) {
+    const version = detailVersion;
+    const detailEl = document.getElementById('server-detail');
     try {
       await API.setServerBaseline(agentID, reportID);
-      await showDetail(agentID);
+      if (version !== detailVersion || document.getElementById('server-detail') !== detailEl) return;
+      const refresh = showDetail(agentID);
+      const refreshVersion = detailVersion;
+      await refresh;
+      if (refreshVersion !== detailVersion || document.getElementById('server-detail') !== detailEl) return;
+      selectDetailTab('reports');
       alert('Baseline updated');
     } catch (err) {
+      if (version !== detailVersion || document.getElementById('server-detail') !== detailEl) return;
       alert('Error: ' + err.message);
     }
   }
@@ -1491,5 +1855,5 @@ Views.Servers = (() => {
     return `<span class="status ${className}">${App.escHtml(label)}</span>`;
   }
 
-  return { render, reload, showDetail, forceReport, showReport, compareSelectedReports, toggleReportCollection, assignGroup, downloadReportPDF, promptEmailReport, setBaseline, showBaselineDrift };
+  return { render, reload, loadViews, applyView, editView, deleteView, changePage, showDetail, closeDetail, selectDetailTab, detailTabKey, clearFilters, filterStatus, forceReport, showReport, compareSelectedReports, toggleReportCollection, assignGroup, downloadReportPDF, promptEmailReport, setBaseline, showBaselineDrift };
 })();

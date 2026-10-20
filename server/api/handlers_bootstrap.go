@@ -39,8 +39,7 @@ func (s *Server) handleLatestPackageDownload(w http.ResponseWriter, r *http.Requ
 		if osTarget == "windows" {
 			filename += ".exe"
 		}
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
-		http.ServeFile(w, r, pkg.FilePath)
+		s.servePackage(w, r, pkg, filename)
 		return
 	}
 

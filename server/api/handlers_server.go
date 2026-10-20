@@ -309,7 +309,7 @@ func (s *Server) handleAssignGroup(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	if req.GroupID != "" && !s.canAccessGroup(s.getClaims(r.Context()), &req.GroupID) {
+	if !s.canAccessGroup(s.getClaims(r.Context()), &req.GroupID) {
 		respondError(w, http.StatusForbidden, "target group outside allowed scope")
 		return
 	}
@@ -888,28 +888,5 @@ func isExceptionExpired(item *db.ComplianceException) bool {
 }
 
 func (s *Server) handleExportReport(w http.ResponseWriter, r *http.Request) {
-	format := r.URL.Query().Get("format")
-	ctx := r.Context()
-	agents, err := s.db.ListAgents(ctx)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to get data")
-		return
-	}
-
-	switch format {
-	case "csv":
-		w.Header().Set("Content-Type", "text/csv")
-		w.Header().Set("Content-Disposition", "attachment; filename=servers.csv")
-		w.Write([]byte("ID,Hostname,OS,Status,Last Seen,Group\n"))
-		for _, a := range agents {
-			lastSeen := ""
-			if a.LastSeen != nil {
-				lastSeen = a.LastSeen.Format("2006-01-02 15:04:05")
-			}
-			w.Write([]byte(a.ID + "," + a.Hostname + "," + a.OS + "," +
-				a.Status + "," + lastSeen + "," + a.GroupName + "\n"))
-		}
-	default:
-		respondError(w, http.StatusBadRequest, "unsupported format, use csv")
-	}
+	s.exportInventory(w, r, s.db)
 }

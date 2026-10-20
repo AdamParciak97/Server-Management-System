@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"encoding/json"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,12 +15,25 @@ type PackageRecord struct {
 	Version     string    `json:"version"`
 	OSTarget    string    `json:"os_target"`
 	ArchTarget  string    `json:"arch_target"`
-	FilePath    string    `json:"file_path"`
+	FilePath    string    `json:"-"`
 	FileSize    int64     `json:"file_size"`
 	SHA256      string    `json:"sha256"`
 	Description string    `json:"description,omitempty"`
 	UploadedBy  *string   `json:"uploaded_by,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+// Expose only the download filename, never the server's storage directory.
+func (p PackageRecord) MarshalJSON() ([]byte, error) {
+	type publicPackage PackageRecord
+	filename := ""
+	if p.FilePath != "" {
+		filename = filepath.Base(p.FilePath)
+	}
+	return json.Marshal(struct {
+		publicPackage
+		Filename string `json:"filename"`
+	}{publicPackage(p), filename})
 }
 
 func (d *DB) CreatePackage(ctx context.Context, p PackageRecord) (*PackageRecord, error) {

@@ -40,7 +40,8 @@ func (s *Server) handleEmailReport(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "report not found")
 		return
 	}
-	agent, _ := s.db.GetAgent(r.Context(), report.AgentID)
+	agent, err := s.authorizedReportAgent(r.Context(), report.AgentID, s.db)
+	if err != nil { respondError(w, http.StatusNotFound, "report not found in current scope"); return }
 
 	settings, err := s.loadReportSMTPSettings(r.Context())
 	if err != nil {

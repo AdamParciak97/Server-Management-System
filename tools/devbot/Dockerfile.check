@@ -1,0 +1,20 @@
+FROM golang:1.23-alpine AS checks
+RUN apk add --no-cache git ca-certificates
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY agent/ agent/
+COPY server/ server/
+COPY shared/ shared/
+# A fresh RUN is forced for each verification, including when sources are unchanged.
+ARG CHECK_RUN
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    echo "$CHECK_RUN" && CGO_ENABLED=0 go test -count=1 ./... && go vet ./... \
+    && CGO_ENABLED=0 GOOS=linux go build -o /dev/null ./server \
+    && CGO_ENABLED=0 GOOS=linux go build -o /dev/null ./agent \
+    && CGO_ENABLED=0 GOOS=windows go build -o /dev/null ./agent \
+    && echo "$CHECK_RUN" > /check-passed
+
+# Export only the verification marker, not a Go toolchain image every cycle.
+FROM scratch
+COPY --from=checks /check-passed /check-passed

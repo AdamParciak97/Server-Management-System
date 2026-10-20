@@ -87,8 +87,8 @@ func (d *DB) CreateOrUpdateLDAPUser(ctx context.Context, username, email, role s
 		ON CONFLICT (username) DO UPDATE
 		SET email = EXCLUDED.email,
 			role = EXCLUDED.role,
-			auth_source = 'ldap',
-			is_active = true
+			auth_source = 'ldap'
+		WHERE users.auth_source = 'ldap' AND users.is_active = true
 		RETURNING id`,
 		uuid.New().String(), username, email, "$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQyCNNEMwdGTMaKTFCeHxOVA2", role).Scan(&id)
 	if err != nil {
@@ -103,8 +103,13 @@ func (d *DB) UpdateUserLastLogin(ctx context.Context, id string) error {
 }
 
 func (d *DB) DeleteUser(ctx context.Context, id string) error {
-	_, err := d.Pool.Exec(ctx, `UPDATE users SET is_active = false WHERE id = $1`, id)
-	return err
+	tx, err := d.Pool.Begin(ctx)
+	if err != nil { return err }
+	defer tx.Rollback(ctx)
+	if err = lockSessionUser(ctx, tx, id); err != nil { return err }
+	if _, err = tx.Exec(ctx, `UPDATE users SET is_active=false WHERE id=$1`, id); err != nil { return err }
+	if err = revokeAllAccountSessions(ctx, tx, id); err != nil { return err }
+	return tx.Commit(ctx)
 }
 
 func (d *DB) GetUserPasswordHash(ctx context.Context, id string) (string, error) {
@@ -113,13 +118,21 @@ func (d *DB) GetUserPasswordHash(ctx context.Context, id string) (string, error)
 	return hash, err
 }
 
-func (d *DB) UpdateUserPassword(ctx context.Context, id, password string) error {
+func (d *DB) UpdateUserPassword(ctx context.Context, id, expectedHash, password string) error {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {
 		return err
 	}
-	_, err = d.Pool.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, id, string(hash))
-	return err
+	tx, err := d.Pool.Begin(ctx)
+	if err != nil { return err }
+	defer tx.Rollback(ctx)
+	if err = lockSessionUser(ctx, tx, id); err != nil { return err }
+	tag, err := tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1 AND password_hash=$3 AND auth_source<>'ldap'`, id, string(hash), expectedHash)
+	if err != nil { return err }
+	if tag.RowsAffected()!=1 { return ErrSessionInvalid }
+	if err = revokeAllAccountSessions(ctx, tx, id); err != nil { return err }
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_log (user_id,username,action,result) SELECT id,username,'account.password.change','success' FROM users WHERE id=$1`, id); err != nil { return err }
+	return tx.Commit(ctx)
 }
 
 func (d *DB) VerifyPassword(hash, password string) bool {
@@ -161,74 +174,4 @@ func (d *DB) SetUserPermissions(ctx context.Context, userID string, permissions 
 		}
 	}
 	return tx.Commit(ctx)
-}
-
-// ─── Refresh tokens ───────────────────────────────────────────────────────────
-
-func (d *DB) SaveRefreshToken(ctx context.Context, userID, tokenHash string, expiresAt time.Time) error {
-	id := uuid.New().String()
-	_, err := d.Pool.Exec(ctx, `
-		INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)
-		VALUES ($1, $2, $3, $4)`, id, userID, tokenHash, expiresAt)
-	return err
-}
-
-func (d *DB) ValidateRefreshToken(ctx context.Context, tokenHash string) (string, error) {
-	var userID string
-	err := d.Pool.QueryRow(ctx, `
-		SELECT user_id FROM refresh_tokens
-		WHERE token_hash = $1 AND revoked = false AND expires_at > NOW()`,
-		tokenHash).Scan(&userID)
-	return userID, err
-}
-
-func (d *DB) RevokeRefreshToken(ctx context.Context, tokenHash string) error {
-	_, err := d.Pool.Exec(ctx, `
-		UPDATE refresh_tokens SET revoked = true WHERE token_hash = $1`, tokenHash)
-	return err
-}
-
-// ─── Registration tokens ──────────────────────────────────────────────────────
-
-type RegToken struct {
-	ID        string     `json:"id"`
-	Token     string     `json:"token"`
-	CreatedBy *string    `json:"created_by,omitempty"`
-	Used      bool       `json:"used"`
-	UsedAt    *time.Time `json:"used_at,omitempty"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	Note      string     `json:"note,omitempty"`
-}
-
-func (d *DB) CreateRegistrationToken(ctx context.Context, userID *string, expiresAt *time.Time, note string) (*RegToken, error) {
-	id := uuid.New().String()
-	token := uuid.New().String()
-	_, err := d.Pool.Exec(ctx, `
-		INSERT INTO registration_tokens (id, token, created_by, expires_at, note)
-		VALUES ($1, $2, $3, $4, $5)`, id, token, userID, expiresAt, note)
-	if err != nil {
-		return nil, err
-	}
-	return &RegToken{ID: id, Token: token, CreatedBy: func() *string { s := id; return &s }(), Note: note}, nil
-}
-
-func (d *DB) ListRegistrationTokens(ctx context.Context) ([]*RegToken, error) {
-	rows, err := d.Pool.Query(ctx, `
-		SELECT id, token, created_by, used, used_at, expires_at, created_at, COALESCE(note,'')
-		FROM registration_tokens ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var tokens []*RegToken
-	for rows.Next() {
-		var t RegToken
-		err := rows.Scan(&t.ID, &t.Token, &t.CreatedBy, &t.Used, &t.UsedAt, &t.ExpiresAt, &t.CreatedAt, &t.Note)
-		if err != nil {
-			return nil, err
-		}
-		tokens = append(tokens, &t)
-	}
-	return tokens, rows.Err()
 }

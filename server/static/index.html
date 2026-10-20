@@ -3,67 +3,84 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SMS - Server Management System</title>
+<meta name="theme-color" content="#0c1118">
+<title>SMS — Infrastructure Console</title>
 <link rel="stylesheet" href="/static/css/main.css">
+<link rel="stylesheet" href="/static/css/console.css">
 </head>
 <body>
 <div id="app">
   <!-- Login screen shown by JS if not authenticated -->
   <div id="login-screen" class="hidden">
+    <div class="login-story">
+      <div class="brand-lockup"><span class="brand-mark">s<span>m</span>s</span><span>Infrastructure console</span></div>
+      <div class="login-intro"><span class="eyebrow">ONE CLEAR PICTURE</span><h1>Your infrastructure.<br><em>Under control.</em></h1><p>From a single server to your entire fleet.<br>Visibility, automation and security in one workspace.</p></div>
+      <div class="login-topology" aria-hidden="true"><div class="topology-line"></div><div class="topology-node node-a"><span></span>INVENTORY</div><div class="topology-node node-b"><span></span>SMS CORE</div><div class="topology-node node-c"><span></span>COMPLIANCE</div></div>
+      <div class="login-caption"><span class="tiny-dot"></span> Built for the people behind the infrastructure.</div>
+    </div>
     <div class="login-card">
-      <h1>Server Management System</h1>
+      <span class="eyebrow">YOUR WORKSPACE</span>
+      <h1>Welcome back.</h1>
+      <p class="login-subtitle">Sign in to your infrastructure console.</p>
+      <p id="login-notice" class="text-muted" role="status" aria-live="polite" hidden></p>
       <form id="login-form">
         <div class="form-group">
-          <label>Username</label>
-          <input type="text" id="login-username" placeholder="admin" autocomplete="username">
+          <label for="login-username">Username</label>
+          <input type="text" id="login-username" placeholder="Enter your username" autocomplete="username" required>
         </div>
         <div class="form-group">
-          <label>Password</label>
-          <input type="password" id="login-password" autocomplete="current-password">
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" placeholder="Enter your password" autocomplete="current-password" required>
         </div>
-        <button type="submit" class="btn btn-primary btn-full">Login</button>
-        <div id="login-error" class="error-msg hidden"></div>
+        <button type="submit" class="btn btn-primary btn-full">Enter workspace <span aria-hidden="true">→</span></button>
+        <div id="login-error" class="error-msg hidden" role="alert"></div>
       </form>
+      <p class="login-note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#shield"></use></svg> Authorized access to your organization</p>
     </div>
   </div>
 
   <!-- Main app (shown after login) -->
   <div id="main-app" class="hidden">
-    <nav id="sidebar">
-      <div class="logo">SMS</div>
+    <nav id="sidebar" aria-label="Main navigation">
+      <a class="logo" href="#overview"><span class="brand-mark">s<span>m</span>s</span><span class="logo-copy">Infrastructure<span>OPERATIONS CONSOLE</span></span></a>
+      <div class="workspace-label"><span class="workspace-symbol">W</span><span>My workspace<small>Server management</small></span></div>
       <ul class="nav-menu">
+        <li class="nav-section">WORKSPACE</li>
         <li><a href="#overview" class="nav-link active" data-view="overview">
-          <span class="nav-icon">&#9672;</span> Overview
+          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#grid"></use></svg> Overview
         </a></li>
         <li><a href="#servers" class="nav-link" data-view="servers">
-          <span class="nav-icon">&#9671;</span> Servers
+          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#server"></use></svg> Servers
         </a></li>
         <li><a href="#commands" class="nav-link" data-view="commands">
-          <span class="nav-icon">&#9670;</span> Commands
+          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#terminal"></use></svg> Commands
         </a></li>
         <li><a href="#alerts" class="nav-link" data-view="alerts">
-          <span class="nav-icon">&#9650;</span> Alerts
+          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#bell"></use></svg> Alerts
           <span id="alert-badge" class="badge hidden">0</span>
         </a></li>
+        <li class="nav-section">MANAGEMENT</li>
         <li><a href="#compliance" class="nav-link" data-view="compliance">
-          <span class="nav-icon">&#10003;</span> Compliance
+          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#shield"></use></svg> Compliance
         </a></li>
         <li><a href="#packages" class="nav-link" data-view="packages">
-          <span class="nav-icon">&#9707;</span> Packages
+          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#box"></use></svg> Packages
         </a></li>
         <li><a href="#audit" class="nav-link" data-view="audit">
-          <span class="nav-icon">&#9783;</span> Audit Log
+          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#history"></use></svg> Audit Log
         </a></li>
         <li><a href="#settings" class="nav-link" data-view="settings">
-          <span class="nav-icon">&#9881;</span> Settings
+          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#settings"></use></svg> Settings
         </a></li>
       </ul>
+      <div class="sidebar-note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#pulse"></use></svg><strong>A clearer view.<br>A stronger infrastructure.</strong><span>Your operations, connected.</span></div>
       <div class="sidebar-footer">
-        <span id="current-user"></span>
-        <button id="logout-btn" class="btn btn-sm">Logout</button>
+        <span class="user-avatar" aria-hidden="true">U</span><span id="current-user"></span>
+        <button id="logout-btn" class="btn btn-sm icon-button" aria-label="Log out" title="Log out"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#logout"></use></svg></button>
       </div>
     </nav>
-
+    <button id="sidebar-backdrop" class="sidebar-backdrop hidden" aria-label="Close navigation"></button>
+    <header class="topbar"><div class="topbar-location"><button id="menu-toggle" class="btn icon-button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#menu"></use></svg></button><span>Workspace</span><span class="breadcrumb-divider">/</span><strong id="current-view-label">Overview</strong></div><div class="topbar-right"><span class="console-label">INFRASTRUCTURE CONSOLE</span><a href="#alerts" class="topbar-alert" aria-label="Open alerts"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#bell"></use></svg></a><span class="user-avatar" id="topbar-avatar" aria-hidden="true">U</span></div></header>
     <main id="content">
       <!-- Views rendered by JS -->
     </main>
@@ -72,6 +89,7 @@
 
 <script src="/static/vendor/chart.min.js"></script>
 <script src="/static/js/api.js"></script>
+<script src="/static/js/ui.js"></script>
 <script>window.Views = window.Views || {};</script>
 <script src="/static/js/views/overview.js"></script>
 <script src="/static/js/views/servers.js"></script>
@@ -80,6 +98,7 @@
 <script src="/static/js/views/compliance.js"></script>
 <script src="/static/js/views/packages.js"></script>
 <script src="/static/js/views/audit.js"></script>
+<script src="/static/js/views/account.js"></script>
 <script src="/static/js/views/settings.js"></script>
 <script src="/static/js/app.js"></script>
 </body>

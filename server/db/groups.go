@@ -58,8 +58,10 @@ func (d *DB) GetGroup(ctx context.Context, id string) (*Group, error) {
 }
 
 func (d *DB) DeleteGroup(ctx context.Context, id string) error {
-	_, err := d.Pool.Exec(ctx, `DELETE FROM groups WHERE id = $1`, id)
-	return err
+	tag, err := d.Pool.Exec(ctx, `DELETE FROM groups WHERE id = $1`, id)
+	if err != nil { return groupWriteError(err) }
+	if tag.RowsAffected() == 0 { return ErrScopedResourceMissing }
+	return nil
 }
 
 func (d *DB) AssignAgentToGroup(ctx context.Context, agentID, groupID string) error {
@@ -113,6 +115,12 @@ func (d *DB) SetRequiredAgents(ctx context.Context, groupID string, agents []str
 	}
 	defer tx.Rollback(ctx)
 
+	// Serialize replacement of the entire set, including replacement with an
+	// empty list, and prevent deletion of the group during the write.
+	var lockedID string
+	if err = tx.QueryRow(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, groupID).Scan(&lockedID); err != nil {
+		return err
+	}
 	_, err = tx.Exec(ctx, `DELETE FROM required_security_agents WHERE group_id = $1`, groupID)
 	if err != nil {
 		return err
@@ -130,7 +138,7 @@ func (d *DB) SetRequiredAgents(ctx context.Context, groupID string, agents []str
 
 func (d *DB) GetRequiredAgents(ctx context.Context, groupID string) ([]string, error) {
 	rows, err := d.Pool.Query(ctx, `
-		SELECT agent_name FROM required_security_agents WHERE group_id = $1`, groupID)
+		SELECT agent_name FROM required_security_agents WHERE group_id = $1 ORDER BY agent_name`, groupID)
 	if err != nil {
 		return nil, err
 	}

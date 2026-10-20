@@ -19,3 +19,6 @@ docker-compose*.yml
 tmp/
 .vscode/
 .idea/
+.devbot/
+**/__pycache__/
+**/*.pyc

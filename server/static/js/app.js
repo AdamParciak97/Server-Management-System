@@ -11,7 +11,12 @@ window.App = (() => {
     views[name] = module;
   }
 
-  function showLogin() {
+  function showLogin(message = '') {
+    Views.Account?.leave?.();
+    const notice = document.getElementById('login-notice');
+    if (notice) { notice.textContent = message; notice.hidden = !message; }
+    Views.Settings?.hideToken?.();
+    closeNavigation();
     document.getElementById('login-screen').classList.remove('hidden');
     document.getElementById('main-app').classList.add('hidden');
   }
@@ -22,10 +27,17 @@ window.App = (() => {
     const user = API.getUser();
     if (user) {
       document.getElementById('current-user').textContent = user.username + ' (' + user.role + ')';
+      document.querySelectorAll('.user-avatar').forEach(el => { el.textContent = user.username.slice(0, 1).toUpperCase(); });
     }
   }
 
   function navigate(viewName) {
+    Views.Account?.leave?.();
+    closeNavigation();
+    const label = document.getElementById('current-view-label');
+    const link = document.querySelector(`.nav-link[data-view="${viewName.replace(/[^a-z]/g, '')}"]`);
+    if (label) label.textContent = link ? link.textContent.trim().replace(/\s+/g, ' ').replace(/\s+\d+$/, '') : 'Workspace';
+    if (views[viewName]) history.replaceState(null, '', '#' + viewName);
     // Update nav
     document.querySelectorAll('.nav-link').forEach(a => {
       a.classList.toggle('active', a.dataset.view === viewName);
@@ -39,6 +51,12 @@ window.App = (() => {
     } else {
       content.innerHTML = `<p class="text-muted">View "${viewName}" not found.</p>`;
     }
+  }
+
+  function closeNavigation() {
+    document.body.classList.remove('sidebar-open');
+    document.getElementById('menu-toggle')?.setAttribute('aria-expanded', 'false');
+    document.getElementById('sidebar-backdrop')?.classList.add('hidden');
   }
 
   async function updateAlertBadge() {
@@ -57,6 +75,13 @@ window.App = (() => {
 
   function init() {
     API.init();
+    document.getElementById('menu-toggle').addEventListener('click', () => {
+      const open = document.body.classList.toggle('sidebar-open');
+      document.getElementById('menu-toggle').setAttribute('aria-expanded', String(open));
+      document.getElementById('sidebar-backdrop').classList.toggle('hidden', !open);
+    });
+    document.getElementById('sidebar-backdrop').addEventListener('click', closeNavigation);
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') closeNavigation(); });
 
     // Register views
     registerView('overview', Views.Overview);
@@ -89,9 +114,10 @@ window.App = (() => {
 
     // Logout
     document.getElementById('logout-btn').addEventListener('click', async () => {
-      await API.logout();
+      const result = await API.logout();
+      if (result.sessionChanged) return;
       if (refreshInterval) clearInterval(refreshInterval);
-      showLogin();
+      showLogin(result.confirmed ? '' : 'Signed out locally. Server revocation could not be confirmed. Sign in and use Sign out other sessions to revoke the previous session.');
     });
 
     // Navigation

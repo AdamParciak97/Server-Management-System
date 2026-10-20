@@ -39,3 +39,8 @@ sms-deploy*/
 *.log
 tmp/
 temp/
+
+# Local development bot state, transcripts and caches
+.devbot/
+__pycache__/
+*.pyc

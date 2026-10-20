@@ -1,0 +1,12 @@
+{
+  "model": null,
+  "test_runner": "docker",
+  "preview_enabled": true,
+  "cycle_pause_seconds": 5,
+  "limit_retry_seconds": 900,
+  "limit_max_retry_seconds": 3600,
+  "error_retry_seconds": 60,
+  "max_consecutive_errors": 3,
+  "agent_timeout_seconds": 3600,
+  "test_timeout_seconds": 1800
+}
