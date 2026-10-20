@@ -51,7 +51,8 @@ certyfikatu klienta; unieważnienie tokena nie odłącza już zarejestrowanego a
 - liczba agentów, alertów i statusów hostów
 - wykresy albo kafelki z najważniejszymi metrykami
 
-![Dashboard overview](docs/screenshots/dashboard-overview.png)
+<img width="1894" height="913" alt="image" src="https://github.com/user-attachments/assets/da3aa4f4-a2b8-4501-9b02-89f185fc30ec" />
+
 
 ### 2. Server inventory
 
@@ -59,7 +60,8 @@ certyfikatu klienta; unieważnienie tokena nie odłącza już zarejestrowanego a
 - szczegóły wybranego hosta
 - pakiety, usługi, procesy albo diff konfiguracji
 
-![Server inventory](docs/screenshots/server-inventory.png)
+<img width="1906" height="905" alt="image" src="https://github.com/user-attachments/assets/5ab6de71-46fa-4f6d-8e92-f22fa993155e" />
+
 
 ### 3. Remote commands
 
@@ -67,7 +69,8 @@ certyfikatu klienta; unieważnienie tokena nie odłącza już zarejestrowanego a
 - status wykonania
 - log wykonania albo historię komend
 
-![Remote commands](docs/screenshots/remote-commands.png)
+<img width="1903" height="903" alt="image" src="https://github.com/user-attachments/assets/26876e80-ccb3-4952-bc87-dffcbe731be9" />
+
 
 ### 4. Compliance and alerts
 
@@ -75,7 +78,11 @@ certyfikatu klienta; unieważnienie tokena nie odłącza już zarejestrowanego a
 - aktywne alerty
 - stan zgodności hostów z politykami
 
-![Compliance and alerts](docs/screenshots/compliance-alerts.png)
+<img width="1917" height="907" alt="image" src="https://github.com/user-attachments/assets/3b55c83e-2298-4411-91c2-48e4d1a26329" />
+
+<img width="1900" height="899" alt="image" src="https://github.com/user-attachments/assets/66ebfcb8-f151-4fd0-af9a-16a335c8aff1" />
+
+<img width="1908" height="905" alt="image" src="https://github.com/user-attachments/assets/204fce4a-0597-461d-adfb-27f4bbc95398" />
 
 ## Szybki start lokalnie
 
